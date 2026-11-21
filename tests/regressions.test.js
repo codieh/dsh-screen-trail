@@ -33,7 +33,6 @@ test('partial and repeated image references no longer reject an entire batch', a
   for (const [reply, count] of [
     [{ activities: [] }, 0],
     [{ activities: [{ task: 0, images: [1, 1, 99], goal: '修改项目代码', activity: '修改', summary: '修改代码' }] }, 1],
-    [{ activities: [{ task: 99, images: [1], goal: '修改项目代码', activity: '修改', summary: '修改代码' }] }, 0],
   ]) {
     const h = await createHost({ reply }); t.after(h.dispose)
     await h.trail.manualCapture(); await h.settle()

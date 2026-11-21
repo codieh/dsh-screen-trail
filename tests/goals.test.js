@@ -63,7 +63,7 @@ test('player, details and playback form one goal with phases and a meaningful co
   assert.equal(h.requests.length, 1); assert.equal(h.state().records.length, 1)
   assert.equal(record.analysis.goal, goal); assert.equal(record.evidence.length, 3)
   assert.equal(record.context.windowId, 35144); assert.equal(record.analysis.details.length, 3)
-  assert.match(h.requests[0].system, /whole timeline/)
+  assert.match(h.requests[0].system, /Harness conversation/)
   assert.match(h.requests[0].system, /not a browsing history/)
 })
 
@@ -78,15 +78,15 @@ test('one five-minute batch can produce multiple independent goals in the same b
 })
 
 test('an existing goal continues across batches even when its phase label changes', async (t) => {
-  const h = await createHost({ reply: ({ recent, observations, requests }) => ({ activities: [{
-    task: recent[0]?.number || 0, goal, images: observations.map((item) => item.number),
+  const h = await createHost({ reply: ({ saved, observations, requests }) => ({ activities: [{
+    task: saved[0]?.id ?? null, goal, images: observations.map((item) => item.number),
     activity: requests.length === 1 ? '选择《中国奇谭2》剧集' : '观看《中国奇谭2》第9话', summary: '选择剧集并开始观看。',
   }] }) }); t.after(h.dispose)
   await h.trail.start(); await h.settle(); await h.advance(300000)
   const id = h.state().records[0].id
   await h.frame(255); await h.advance(300000)
   assert.equal(h.state().records.length, 1); assert.equal(h.state().records[0].id, id)
-  assert.equal(h.requests[1].recent[0].goal, goal)
+  assert.equal(h.requests[1].saved[0].id, id)
 })
 
 test('explicitly new work is not silently merged by a matching label and window', async (t) => {
@@ -99,9 +99,9 @@ test('explicitly new work is not silently merged by a matching label and window'
 })
 
 test('later evidence consolidates previously split phases while preserving an unrelated goal', async (t) => {
-  const h = await createHost({ history: history(), reply: ({ recent, observations }) => ({ activities: [{
-    task: recent.find((item) => item.activity.includes('打开')).number,
-    mergeTasks: recent.filter((item) => /继续观看|浏览《/.test(item.activity)).map((item) => item.number),
+  const h = await createHost({ history: history(), reply: ({ saved, observations }) => ({ activities: [{
+    task: saved.find((item) => item.activity.includes('打开')).id,
+    mergeTasks: saved.filter((item) => /继续观看|浏览《/.test(item.activity)).map((item) => item.id),
     goal, images: observations.map((item) => item.number), cover: 1,
     activity: '观看《中国奇谭2》第9话', summary: '进入播放页并查看详情后，开始观看第9话。', details: ['进入播放页', '查看详情', '继续观看'],
   }] }) }); t.after(h.dispose)
@@ -119,9 +119,9 @@ test('later evidence consolidates previously split phases while preserving an un
 })
 
 test('old fragmented goals may merge without inventing a new screenshot association', async (t) => {
-  const h = await createHost({ history: history(), reply: ({ recent }) => ({ activities: [{
-    task: recent.find((item) => item.activity.includes('打开')).number,
-    mergeTasks: recent.filter((item) => /继续观看|浏览《/.test(item.activity)).map((item) => item.number),
+  const h = await createHost({ history: history(), reply: ({ saved }) => ({ activities: [{
+    task: saved.find((item) => item.activity.includes('打开')).id,
+    mergeTasks: saved.filter((item) => /继续观看|浏览《/.test(item.activity)).map((item) => item.id),
     goal, images: [], cover: 0, activity: '观看《中国奇谭2》第9话', summary: '打开播放页、查看详情后观看同一剧集。',
   }] }) }); t.after(h.dispose)
   await h.trail.manualCapture(); await h.settle()
@@ -130,9 +130,9 @@ test('old fragmented goals may merge without inventing a new screenshot associat
 })
 
 test('supporting lookup keeps the existing main goal and cover', async (t) => {
-  const h = await createHost({ reply: ({ observations, recent }) => ({ activities: [{
-    task: recent[0]?.number || 0, goal: '修复支付接口超时', images: observations.map((item) => item.number), cover: recent.length ? 0 : 1,
-    activity: '修复支付接口超时', summary: recent.length ? '编写修复代码，并查阅相关接口文档。' : '编写支付接口修复代码。',
+  const h = await createHost({ reply: ({ observations, saved }) => ({ activities: [{
+    task: saved[0]?.id ?? null, goal: '修复支付接口超时', images: observations.map((item) => item.number), cover: saved.length ? 0 : 1,
+    activity: '修复支付接口超时', summary: saved.length ? '编写修复代码，并查阅相关接口文档。' : '编写支付接口修复代码。',
   }] }) }); t.after(h.dispose)
   await h.trail.manualCapture(); await h.settle()
   const main = { ...h.state().records[0] }
@@ -166,14 +166,14 @@ test('discarded latest pixels cannot extend the time of an older activity in the
   assert.notEqual(h.state().observations[0].imageId, h.state().records[0].imageId)
 })
 
-test('invalid goal or merge contracts fail visibly and retain raw evidence for explicit retry', async (t) => {
+test('invalid stable references or merge contracts fail visibly and retain evidence for explicit retry', async (t) => {
   const replies = [
     {},
-    { activities: [{ task: 0, images: [1], activity: '浏览页面', summary: '缺少具体目标。' }] },
-    { activities: [{ task: 1, mergeTasks: [99], images: [1], goal, activity: '观看', summary: '错误合并编号。' }] },
-    { activities: [{ task: 0, mergeTasks: [1], images: [1], goal, activity: '观看', summary: '没有已有主事件。' }] },
-    { activities: [{ task: 1, images: [1], cover: 2, goal, activity: '观看', summary: '错误封面编号。' }] },
-    { activities: [1, 1].map(() => ({ task: 1, images: [1], goal, activity: '观看', summary: '同一事件被重复处理。' })) },
+    { activities: [{ task: 1, images: [1], activity: '观看', summary: '旧的临时编号。' }] },
+    { activities: [{ task: 'activity-opening', mergeTasks: ['activity-missing'], images: [1], goal, activity: '观看', summary: '错误合并编号。' }] },
+    { activities: [{ task: null, mergeTasks: ['activity-opening'], images: [1], goal, activity: '观看', summary: '没有已有主事件。' }] },
+    { activities: [{ task: 'activity-opening', images: [1], cover: 2, goal, activity: '观看', summary: '错误封面编号。' }] },
+    { activities: [1, 1].map(() => ({ task: 'activity-opening', images: [1], goal, activity: '观看', summary: '同一事件被重复处理。' })) },
   ]
   for (const reply of replies) {
     const h = await createHost({ history: history(), reply }); t.after(h.dispose)

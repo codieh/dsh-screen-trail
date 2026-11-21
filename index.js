@@ -1,6 +1,6 @@
 import { ScreenTrail } from './trail.js'
 
-export const inject = ['llm', 'webServer', 'attachments', 'agentDefaultModel', 'timer']
+export const inject = ['llm', 'webServer', 'attachments', 'agentDefaultModel', 'timer', 'agents', 'sessions', 'sessionPersistence', 'sessionQuery', 'sessionTitle', 'workingDirectory', 'workspaceRegistry']
 const prefix = '/screen-trail/api'
 
 function send(response, status, value) {

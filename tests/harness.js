@@ -10,10 +10,12 @@ export function makeFrame(value, context, at) {
 }
 
 /** 所有屏幕帧、时钟、磁盘和模型都注入，回归测试不会读取真实桌面或调用云端。 */
-export async function createHost({ hold = false, reply, corrupt = false, writeError = false, history, captureError, captureGate,
+export async function createHost({ hold = false, reply, corrupt = false, writeError = false, history, captureError, captureGate, conversations = new Map(), workspaces = new Map(), workspaceError, startAt = 1700000000000,
   finishReason = { kind: 'stop' }, usage = { inputTokens: 100, outputTokens: 200 }, modelInfo = { inputModalities: ['image'] }, config = {} } = {}) {
   const files = new Map(); const removed = []; const requests = []; const logs = []; const commands = []; const timers = new Map()
-  let now = 1700000000000; let seq = 0; let timerSeq = 0; let screenValue = 0
+  const liveAgents = new Map(); const createdSessions = []; const resumedSessions = []; const flushedSessions = []
+  const sessionListeners = new Set()
+  let now = startAt; let seq = conversations.size * 10000; let timerSeq = 0; let screenValue = 0
   let currentContext = { app: 'Editor', bundleId: 'test.editor', pid: 1, windowId: 1, title: 'A', url: 'https://test/A' }
   let source; let release
   const gate = new Promise((resolve) => { release = resolve })
@@ -33,25 +35,143 @@ export async function createHost({ hold = false, reply, corrupt = false, writeEr
     rm: async (file, options) => { removed.push(file); for (const key of files.keys()) if (key === file || (options?.recursive && key.startsWith(`${file}/`))) files.delete(key) },
   }
   const ctx = {
+    on: (name, fn) => {
+      if (name !== 'session/event') throw new Error(`unexpected host event ${name}`)
+      sessionListeners.add(fn); return () => sessionListeners.delete(fn)
+    },
     logger: { info: (value) => logs.push(value), error: (value) => logs.push(value) },
     agentDefaultModel: { currentSelection: () => ({ provider: 'mock', model: 'vision' }) },
     attachments: { saveImage: async ({ name }) => ({ id: name }) },
     llm: {
       resolveModelInfo: async () => modelInfo,
       stream: async function* (request) {
-        const text = request.messages[0].content[0].text.split('\n')
+        const input = request.messages.findLast((message) => message.role === 'user'
+          && message.content.some((item) => item.type === 'text' && item.text.includes('Saved activities state: ')))
+        const text = input.content.find((item) => item.type === 'text' && item.text.includes('Saved activities state: ')).text.split('\n')
         const observations = JSON.parse(text.find((line) => line.startsWith('Observations in time order: ')).slice('Observations in time order: '.length))
         const timeline = JSON.parse(text.find((line) => line.startsWith('Batch timeline (all observations): ')).slice('Batch timeline (all observations): '.length))
-        const recent = JSON.parse(text.find((line) => line.startsWith('Recent activities: ')).slice('Recent activities: '.length))
-        requests.push({ ...request, at: now, observations, timeline, recent })
-        if (hold) await gate
-        const result = reply === undefined ? { activities: [{ task: recent[0]?.number || 0,
+        const saved = JSON.parse(text.find((line) => line.startsWith('Saved activities state: ')).slice('Saved activities state: '.length))
+        requests.push({ ...request, at: now, observations, timeline, saved })
+        if (hold) {
+          let aborted
+          try {
+            await Promise.race([gate, new Promise((_, reject) => {
+              aborted = () => reject(request.signal.reason || new Error('cancelled'))
+              request.signal.addEventListener('abort', aborted, { once: true })
+              if (request.signal.aborted) aborted()
+            })])
+          } finally { request.signal.removeEventListener('abort', aborted) }
+        }
+        const result = reply === undefined ? { activities: [{ task: saved[0]?.id ?? null,
           images: observations.map((item) => item.number), goal: '完成项目代码修改与验证', activity: '编写代码', summary: `第 ${requests.length} 次请求整理活动`, change: '修改并验证代码。' }] }
-          : typeof reply === 'function' ? reply({ observations, timeline, recent, requests }) : reply
+          : typeof reply === 'function' ? reply({ observations, timeline, saved, requests }) : reply
         yield { type: 'text-delta', index: 0, text: typeof result === 'string' ? result : JSON.stringify(result) }
         if (usage) yield { type: 'usage', usage }
         if (finishReason) yield { type: 'finish', reason: finishReason }
       },
+    },
+  }
+  // 模拟宿主原生 Agent 契约：先持久化输入，再执行真实流并记录原始回复；不调用云端。
+  const attachAgent = (session, options = {}) => {
+    const listeners = new Map(); let system = ''; let active; let controller; let selected = { ...options }; let streamRevision = 0
+    const emit = (name, payload) => { for (const fn of listeners.get(name) || []) fn({ agent, ...payload }) }
+    const append = (type, data) => {
+      const event = { seq: session.events.length, time: now, type, data: structuredClone(data) }
+      session.events.push(event); for (const fn of sessionListeners) fn(session, event); return event
+    }
+    session.append = append
+    const agent = { id: session.id, session, status: 'idle', options,
+      model: { select: (selection) => { selected = { ...selection }; append('model/selection', selection) } },
+      ctx: {
+        get: (name) => name === 'compaction' ? ctx.compaction : undefined,
+        on: (name, fn) => {
+          if (!listeners.has(name)) listeners.set(name, new Set())
+          listeners.get(name).add(fn); return () => listeners.get(name).delete(fn)
+        },
+        systemPrompt: { section: (section) => { const previous = system; system = section.text; return () => { system = previous } } },
+        tools: {
+          restrict: (filter) => { agent.toolRestriction = filter; return () => { agent.toolRestriction = null } },
+          guard: (fn) => { agent.toolGuard = fn; return () => { agent.toolGuard = null } },
+        },
+      },
+      followup: (message) => {
+        if (agent.status !== 'idle') throw new Error('agent busy')
+        agent.status = 'running'; controller = new AbortController()
+        active = (async () => {
+          const turn = session.events.filter((event) => event.type === 'turn/start').length + 1
+          append('turn/start', { turn }); emit('agent/inbox/claimed', { message, turn })
+          append('user/message', message)
+          const chunks = []; let raw = ''
+          let reason = { kind: 'completed' }
+          const revision = ++streamRevision; const attemptId = `attempt-${session.id}-${turn}-${revision}`
+          let streamIndex = 0; let settlement
+          emit('agent/assistant-stream', { frame: { type: 'start', attemptId, revision, turn, step: 1 } })
+          try {
+            const messages = session.events.filter((event) => ['user/message', 'assistant/message'].includes(event.type)).map((event) => event.data)
+            for await (const chunk of ctx.llm.stream({ ...selected, system, messages, maxTokens: options.maxTokens, sessionId: session.id, signal: controller.signal })) {
+              chunks.push(chunk); if (chunk.type === 'text-delta') raw += chunk.text
+              emit('agent/assistant-stream', { frame: { type: 'chunk', attemptId, revision, index: streamIndex++, time: now, chunk } })
+            }
+            settlement = append('assistant/message', { role: 'assistant', content: [{ type: 'text', text: raw }], chunks })
+          } catch (error) {
+            settlement = append('assistant/attempt', { message: String(error.message || error), chunks })
+            reason = { kind: 'failed' }; emit('agent/error', { error, turn })
+          } finally {
+            emit('agent/assistant-stream', { frame: { type: 'end', attemptId, revision, index: streamIndex,
+              outcome: { kind: 'committed', eventType: settlement.type, seq: settlement.seq } } })
+            append('turn/end', { turn, reason }); agent.status = 'idle'
+          }
+        })()
+      },
+      whenIdle: async () => { await active },
+      cancel: () => controller?.abort(new Error('native agent cancelled')),
+    }
+    liveAgents.set(session.id, agent)
+    return { agent, dispose: async () => { agent.cancel(); await agent.whenIdle(); liveAgents.delete(agent.id) } }
+  }
+  ctx.workingDirectory = { defaultDirectory: '/workspace' }
+  ctx.workspaceRegistry = { create: async (directory, title) => {
+    if (workspaceError) throw new Error(workspaceError)
+    if (!workspaces.has(directory)) {
+      const workspace = { id: `workspace-${workspaces.size + 1}`, path: directory, title, sessionIds: [],
+        attachSession: async (id) => {
+          const session = conversations.get(id)
+          if (!session || session.cwd !== workspace.path) throw new Error('session cwd does not match workspace')
+          if (!workspace.sessionIds.includes(id)) workspace.sessionIds.unshift(id)
+        },
+      }
+      workspaces.set(directory, workspace)
+    }
+    return workspaces.get(directory)
+  } }
+  ctx.sessions = { get: (id) => liveAgents.get(id)?.session, flush: async (session) => { flushedSessions.push(session.id) } }
+  ctx.sessionPersistence = { stat: async (id) => {
+    const session = conversations.get(id)
+    if (!session) throw new Error('session not found')
+    return { header: { version: 4, id, cwd: session.cwd, createdAt: session.createdAt, isSeeded: false, delegationDepth: 0 } }
+  } }
+  ctx.sessionQuery = { listEvents: async (id) => {
+    const session = conversations.get(id)
+    if (!session) throw new Error('session not found')
+    return session.events.map(({ seq, time, type }) => ({ seq, time, type }))
+  } }
+  ctx.sessionTitle = { rename: (session, title) => { session.title = title; session.append('session/title', { title }) } }
+  ctx.agents = {
+    get: (id) => liveAgents.get(id),
+    create: async (options) => {
+      if (options.signal?.aborted) throw options.signal.reason
+      const session = { id: options.sessionId, cwd: options.meta.cwd, createdAt: now, events: [] }
+      if (conversations.has(session.id)) throw new Error('duplicate session id')
+      conversations.set(session.id, session); createdSessions.push(session.id)
+      const handle = attachAgent(session, options.agentOptions)
+      await options.setup?.(handle.agent.ctx, handle.agent)
+      return handle
+    },
+    resume: async (options) => {
+      if (options.signal?.aborted) throw options.signal.reason
+      const session = conversations.get(options.resumeSessionId)
+      if (!session) throw new Error('session not found')
+      resumedSessions.push(session.id); return attachAgent(session, options.agentOptions)
     },
   }
   const trail = new ScreenTrail(ctx, config, { fs: io, home: '/virtual-home', now: () => now,
@@ -79,7 +199,7 @@ export async function createHost({ hold = false, reply, corrupt = false, writeEr
     },
   })
   await trail.ready
-  return { trail, ctx, files, removed, requests, logs, commands, release, source, settle,
+  return { trail, ctx, files, removed, requests, logs, commands, release, source, settle, conversations, workspaces, createdSessions, resumedSessions, flushedSessions,
     state: () => trail.state(),
     setScreen: (value, context = currentContext) => { screenValue = value; currentContext = { ...context } },
     frame: async (value = screenValue, { context = currentContext, elapsed = 500 } = {}) => {

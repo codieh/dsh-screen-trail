@@ -69,7 +69,7 @@ test('request includes the entire metadata sequence without increasing uploaded 
   assert.match(request.messages[0].content[0].text, /metadata only/)
   assert.match(request.system, /Gaps are unobserved/)
   assert.match(request.system, /Visibility does not establish reading/)
-  assert.match(request.system, /previous model interpretations/)
+  assert.match(request.system, /current output database/)
   assert.match(request.system, /not an eligibility threshold/)
 })
 

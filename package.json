@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-screen-trail",
-  "version": "0.5.2",
+  "version": "0.5.6",
   "private": true,
   "type": "module",
   "description": "Native low-frame-rate capture with batched visual analysis and activity-level summaries.",
