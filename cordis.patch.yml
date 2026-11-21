@@ -1,0 +1,9 @@
+# dsh bundle patch: inserts this plugin into a profile's layer stack.
+- insert:
+    - id: screen-trail
+      name: '@local/dsh-screen-trail'
+      config:
+        analysisWindowSec: 300
+        analysisMaxTokens: 16384
+        autoStart: false
+        retention: 80

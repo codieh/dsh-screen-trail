@@ -1,0 +1,10 @@
+# macOS Finder metadata
+.DS_Store
+
+# Runtime artifacts of the host plugin (screenshots, compiled capture helper)
+native/capture-*
+native/module-cache/
+
+# Never part of the package
+node_modules/
+*.log

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36" role="img" aria-label="Screen trail">
+  <defs>
+    <linearGradient id="st-screen-fill" x1="8" y1="6" x2="28" y2="26" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3B7FD4"/>
+      <stop offset="1" stop-color="#1F4F92"/>
+    </linearGradient>
+  </defs>
+  <rect x="5" y="6.5" width="26" height="17.5" rx="3.4" fill="url(#st-screen-fill)"/>
+  <rect x="7.6" y="9.1" width="20.8" height="12.3" rx="1.9" fill="#FFFFFF" opacity="0.92"/>
+  <path d="M12.4 11.9h6.2M12.4 15.2h9.6M12.4 18.2h4.6" stroke="#2B62A8" stroke-width="1.5" stroke-linecap="round" opacity="0.65"/>
+  <circle cx="24.2" cy="17.9" r="2.5" fill="#E5484D"/>
+  <circle cx="24.2" cy="17.9" r="2.5" fill="none" stroke="#FFFFFF" stroke-width="0.9"/>
+  <path d="M13.4 28.4h9.2" stroke="#1F4F92" stroke-width="2.1" stroke-linecap="round"/>
+  <path d="M18 24v4.4" stroke="#1F4F92" stroke-width="2.1" stroke-linecap="round"/>
+</svg>

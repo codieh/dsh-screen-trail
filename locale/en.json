@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Screen trail",
+    "description": "Observes the primary display through a native macOS stream at up to 2 fps. Every 5 minutes, up to 20 representative images create one or more concrete goal-level activities, update continuing goals or merge their previously split phases. Low-value images are discarded. Excludes the recorder surface while retaining ordinary chat. Includes expandable evidence and queue diagnostics. No OCR, accessibility-body extraction, DOM parsing or all-day video. Requires a local Swift compiler and Screen Recording, not Accessibility or Input Monitoring. Data lives under ~/.dsh/screen-trail; existing history is retained.",
+    "detail": "docs/DETAIL.md"
+  }
+}
