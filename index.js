@@ -1,6 +1,6 @@
 import { ScreenTrail } from './trail.js'
 
-export const inject = ['llm', 'webServer', 'attachments', 'agentDefaultModel', 'timer', 'agents', 'sessions', 'sessionPersistence', 'sessionQuery', 'sessionTitle', 'workingDirectory', 'workspaceRegistry']
+export const inject = ['llm', 'webServer', 'attachments', 'agentDefaultModel', 'timer', 'agents', 'sessions', 'sessionPersistence', 'sessionQuery', 'sessionTitle', 'workingDirectory', 'workspaceRegistry', 'agentPresets', 'tokenMeter']
 const prefix = '/screen-trail/api'
 
 function send(response, status, value) {
@@ -93,6 +93,7 @@ export function registerRoutes(ctx, trail) {
           trail.pumpAnalysis()
           break
         }
+        case 'setSampleInterval': await trail.setSampleInterval(Number(body.intervalSec)); break
         case 'openPermission': await trail.openPermission(body.permission || 'screen'); break
         default: send(response, 400, { ok: false, error: 'unknown action' }); return
       }

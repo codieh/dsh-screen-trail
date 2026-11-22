@@ -11,10 +11,12 @@ export function makeFrame(value, context, at) {
 
 /** 所有屏幕帧、时钟、磁盘和模型都注入，回归测试不会读取真实桌面或调用云端。 */
 export async function createHost({ hold = false, reply, corrupt = false, writeError = false, history, captureError, captureGate, conversations = new Map(), workspaces = new Map(), workspaceError, startAt = 1700000000000,
-  finishReason = { kind: 'stop' }, usage = { inputTokens: 100, outputTokens: 200 }, modelInfo = { inputModalities: ['image'] }, config = {} } = {}) {
+  finishReason = { kind: 'stop' }, usage = { inputTokens: 100, outputTokens: 200 }, modelInfo = { inputModalities: ['image'] }, defaultPreset = 'standard',
+  presetDefinitions = new Map([['standard', { compaction: { config: { auto: true }, compactIfNeeded: () => { throw new Error('compaction belongs to the host loop') } } }]]), config = {} } = {}) {
   const files = new Map(); const removed = []; const requests = []; const logs = []; const commands = []; const timers = new Map()
   const liveAgents = new Map(); const createdSessions = []; const resumedSessions = []; const flushedSessions = []
   const sessionListeners = new Set()
+  const presetBindings = new WeakMap(); const mountedPresets = []
   let now = startAt; let seq = conversations.size * 10000; let timerSeq = 0; let screenValue = 0
   let currentContext = { app: 'Editor', bundleId: 'test.editor', pid: 1, windowId: 1, title: 'A', url: 'https://test/A' }
   let source; let release
@@ -83,7 +85,8 @@ export async function createHost({ hold = false, reply, corrupt = false, writeEr
     const agent = { id: session.id, session, status: 'idle', options,
       model: { select: (selection) => { selected = { ...selection }; append('model/selection', selection) } },
       ctx: {
-        get: (name) => name === 'compaction' ? ctx.compaction : undefined,
+        // 与真实预设隔离组一致：普通上下文查找看不到内部 compaction。
+        get: () => undefined,
         on: (name, fn) => {
           if (!listeners.has(name)) listeners.set(name, new Set())
           listeners.get(name).add(fn); return () => listeners.get(name).delete(fn)
@@ -105,9 +108,14 @@ export async function createHost({ hold = false, reply, corrupt = false, writeEr
           let reason = { kind: 'completed' }
           const revision = ++streamRevision; const attemptId = `attempt-${session.id}-${turn}-${revision}`
           let streamIndex = 0; let settlement
-          emit('agent/assistant-stream', { frame: { type: 'start', attemptId, revision, turn, step: 1 } })
+          let started = false
           try {
-            const messages = session.events.filter((event) => ['user/message', 'assistant/message'].includes(event.type)).map((event) => event.data)
+            await presetBindings.get(agent.ctx)?.definition.beforeStep?.({ agent, append, turn })
+            controller.signal.throwIfAborted()
+            const messages = session.messages()
+            session.contextWindow = 1048576
+            started = true
+            emit('agent/assistant-stream', { frame: { type: 'start', attemptId, revision, turn, step: 1 } })
             for await (const chunk of ctx.llm.stream({ ...selected, system, messages, maxTokens: options.maxTokens, sessionId: session.id, signal: controller.signal })) {
               chunks.push(chunk); if (chunk.type === 'text-delta') raw += chunk.text
               emit('agent/assistant-stream', { frame: { type: 'chunk', attemptId, revision, index: streamIndex++, time: now, chunk } })
@@ -117,7 +125,7 @@ export async function createHost({ hold = false, reply, corrupt = false, writeEr
             settlement = append('assistant/attempt', { message: String(error.message || error), chunks })
             reason = { kind: 'failed' }; emit('agent/error', { error, turn })
           } finally {
-            emit('agent/assistant-stream', { frame: { type: 'end', attemptId, revision, index: streamIndex,
+            if (started) emit('agent/assistant-stream', { frame: { type: 'end', attemptId, revision, index: streamIndex,
               outcome: { kind: 'committed', eventType: settlement.type, seq: settlement.seq } } })
             append('turn/end', { turn, reason }); agent.status = 'idle'
           }
@@ -126,8 +134,35 @@ export async function createHost({ hold = false, reply, corrupt = false, writeEr
       whenIdle: async () => { await active },
       cancel: () => controller?.abort(new Error('native agent cancelled')),
     }
+    session.messages = () => {
+      const events = session.events.filter((event) => ['user/message', 'assistant/message'].includes(event.type)
+        && (session.compactThrough === undefined || event.seq > session.compactThrough))
+      return [...(session.compactedSummary ? [session.compactedSummary] : []), ...events.map((event) => event.data)]
+    }
     liveAgents.set(session.id, agent)
-    return { agent, dispose: async () => { agent.cancel(); await agent.whenIdle(); liveAgents.delete(agent.id) } }
+    return { agent, dispose: async () => { agent.cancel(); await agent.whenIdle(); presetBindings.delete(agent.ctx); liveAgents.delete(agent.id) } }
+  }
+  ctx.agentPresets = {
+    defaultId: defaultPreset,
+    resolve: async (id = ctx.agentPresets.defaultId) => {
+      if (!presetDefinitions.has(id)) throw new Error(`agent preset not found: ${id}`)
+      return { id }
+    },
+    mount: async (agentCtx, id = ctx.agentPresets.defaultId) => {
+      await ctx.agentPresets.resolve(id)
+      presetBindings.set(agentCtx, { id, definition: presetDefinitions.get(id) }); mountedPresets.push(id)
+      return { id }
+    },
+    composedPreset: (agentCtx) => presetBindings.get(agentCtx)?.id,
+    serviceFor: (agent, name) => presetBindings.get(agent.ctx)?.definition[name],
+    presetForSession: (session) => session.events.findLast((event) => event.type === 'agent-preset/selected')?.data.agentPreset ?? session.agentPreset ?? null,
+  }
+  ctx.tokenMeter = {
+    measure: (session) => {
+      const surfaceTokens = session.measuredTokens ?? Math.ceil(JSON.stringify(session.messages()).length / 4)
+      return { totalTokens: surfaceTokens, surfaceTokens }
+    },
+    contextPressure: (session) => session.contextWindow === undefined ? {} : { contextWindow: session.contextWindow },
   }
   ctx.workingDirectory = { defaultDirectory: '/workspace' }
   ctx.workspaceRegistry = { create: async (directory, title) => {
@@ -148,30 +183,39 @@ export async function createHost({ hold = false, reply, corrupt = false, writeEr
   ctx.sessionPersistence = { stat: async (id) => {
     const session = conversations.get(id)
     if (!session) throw new Error('session not found')
-    return { header: { version: 4, id, cwd: session.cwd, createdAt: session.createdAt, isSeeded: false, delegationDepth: 0 } }
+    return { header: { version: 4, id, cwd: session.cwd, agentPreset: session.agentPreset, createdAt: session.createdAt, isSeeded: false, delegationDepth: 0 } }
   } }
   ctx.sessionQuery = { listEvents: async (id) => {
     const session = conversations.get(id)
     if (!session) throw new Error('session not found')
     return session.events.map(({ seq, time, type }) => ({ seq, time, type }))
+  }, inspectSession: async (id, read) => {
+    const session = conversations.get(id)
+    if (!session) throw new Error('session not found')
+    return read(session)
   } }
   ctx.sessionTitle = { rename: (session, title) => { session.title = title; session.append('session/title', { title }) } }
   ctx.agents = {
     get: (id) => liveAgents.get(id),
     create: async (options) => {
       if (options.signal?.aborted) throw options.signal.reason
-      const session = { id: options.sessionId, cwd: options.meta.cwd, createdAt: now, events: [] }
+      const session = { id: options.sessionId, cwd: options.meta.cwd, agentPreset: options.meta.agentPreset, createdAt: now, events: [] }
       if (conversations.has(session.id)) throw new Error('duplicate session id')
       conversations.set(session.id, session); createdSessions.push(session.id)
       const handle = attachAgent(session, options.agentOptions)
-      await options.setup?.(handle.agent.ctx, handle.agent)
+      try { await options.setup?.(handle.agent.ctx, handle.agent) }
+      catch (error) { await handle.dispose(); throw error }
       return handle
     },
     resume: async (options) => {
       if (options.signal?.aborted) throw options.signal.reason
       const session = conversations.get(options.resumeSessionId)
       if (!session) throw new Error('session not found')
-      resumedSessions.push(session.id); return attachAgent(session, options.agentOptions)
+      resumedSessions.push(session.id)
+      const handle = attachAgent(session, options.agentOptions)
+      try { await options.setup?.(handle.agent.ctx, handle.agent) }
+      catch (error) { await handle.dispose(); throw error }
+      return handle
     },
   }
   const trail = new ScreenTrail(ctx, config, { fs: io, home: '/virtual-home', now: () => now,
@@ -199,7 +243,7 @@ export async function createHost({ hold = false, reply, corrupt = false, writeEr
     },
   })
   await trail.ready
-  return { trail, ctx, files, removed, requests, logs, commands, release, source, settle, conversations, workspaces, createdSessions, resumedSessions, flushedSessions,
+  return { trail, ctx, files, removed, requests, logs, commands, release, source, settle, conversations, workspaces, createdSessions, resumedSessions, flushedSessions, presetDefinitions, mountedPresets,
     state: () => trail.state(),
     setScreen: (value, context = currentContext) => { screenValue = value; currentContext = { ...context } },
     frame: async (value = screenValue, { context = currentContext, elapsed = 500 } = {}) => {

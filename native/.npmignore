@@ -1,0 +1,4 @@
+# 编译缓存由用户机器现场生成，不能随原生源码进入安装包。
+capture-*
+module-cache/
+.DS_Store

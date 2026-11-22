@@ -36,30 +36,23 @@ export class SimpleSelector {
   }
 }
 
-/** 固定首尾，按时间分桶覆盖整段活动，桶内优先新资源及上下文边界。 */
+/** 固定首尾，其余按等间隔目标时间取最近候选，不对窗口、触发原因或画面变化加权。 */
 export function representatives(records, limit = 6) {
   if (!Number.isSafeInteger(limit) || limit < 2) throw new Error('representative limit must be an integer of at least 2')
   records = [...records].sort((a, b) => a.at - b.at)
   if (records.length <= limit) return [...records]
   if (limit === 2) return [records[0], records.at(-1)]
-  const selected = new Set([records[0], records.at(-1)])
-  const resource = (item) => JSON.stringify([item.imageId || item.id, item.context || null])
-  const resources = new Set([...selected].map(resource))
-  const buckets = Array.from({ length: limit - 2 }, () => [])
-  const first = records[0].at; const span = Math.max(1, records.at(-1).at - first)
-  for (const item of records.slice(1, -1)) buckets[Math.min(buckets.length - 1, Math.floor((item.at - first) / span * buckets.length))].push(item)
-  const rank = (a, b) => Number(!resources.has(resource(b))) - Number(!resources.has(resource(a)))
-    || Number(b.reason === 'manual') - Number(a.reason === 'manual')
-    || Number(b.reason === 'context') - Number(a.reason === 'context')
-    || (b.lastSeenAt - b.at || 0) - (a.lastSeenAt - a.at || 0) || (b.score || 0) - (a.score || 0) || a.at - b.at
-  for (const bucket of buckets) {
-    if (!bucket.length) continue
-    const item = bucket.sort(rank)[0]; selected.add(item); resources.add(resource(item))
+  const selected = new Set([0, records.length - 1])
+  const first = records[0].at; const span = records.at(-1).at - first
+  for (let slot = 1; slot < limit - 1; slot += 1) {
+    const target = first + span * slot / (limit - 1)
+    let closest = -1
+    for (let index = 1; index < records.length - 1; index += 1) {
+      if (selected.has(index)) continue
+      // 同距时保留时间更早的候选；同一条观察不会重复占用选图名额。
+      if (closest === -1 || Math.abs(records[index].at - target) < Math.abs(records[closest].at - target)) closest = index
+    }
+    selected.add(closest)
   }
-  // 时间分布不均时补齐空桶预算，但不挤掉已经覆盖到的其他时段。
-  while (selected.size < limit) {
-    const item = records.filter((entry) => !selected.has(entry)).sort(rank)[0]
-    selected.add(item); resources.add(resource(item))
-  }
-  return records.filter((item) => selected.has(item))
+  return records.filter((_, index) => selected.has(index))
 }

@@ -13,7 +13,7 @@ window.__ModuleLoader__.load({
     const EN = {
       panel: 'Screen trail',
       title: 'Screen trail',
-      intro: 'Observes the primary display at up to 2 fps. By default, every 5 minutes up to 20 representative images become one or more goal-level activities. Low-value images are discarded. This recorder page is excluded.',
+      intro: 'Samples the primary display at your chosen interval (5 seconds by default). Every 5 minutes, up to 20 representative images become activities. Low-value images are discarded. This recorder page is excluded.',
       start: 'Start',
       stop: 'Pause',
       capture: 'Analyse now',
@@ -29,7 +29,7 @@ window.__ModuleLoader__.load({
       paused: 'Paused',
       idle: 'Not recording',
       working: 'Analysing',
-      sampling: 'Capture fps',
+      sampling: 'Sampling interval',
       activities: 'Activities',
       evidence: 'Screenshots',
       observations: 'Capture evidence',
@@ -100,7 +100,7 @@ window.__ModuleLoader__.load({
     const ZH = {
       panel: '屏幕纪事',
       title: '屏幕纪事',
-      intro: '主屏最高每秒 2 帧，默认每 5 分钟选最多 20 张图，按目标整理为一个或多个事件，无价值画面直接舍弃。纪事自身页面不采集。',
+      intro: '按自定义间隔采样主屏，默认每 5 秒一次；每 5 分钟选最多 20 张图整理为事件，无价值画面直接舍弃。纪事自身页面不采集。',
       start: '开始记录',
       stop: '暂停',
       capture: '立即分析',
@@ -116,7 +116,7 @@ window.__ModuleLoader__.load({
       paused: '已暂停',
       idle: '未记录',
       working: '分析中',
-      sampling: '采集帧率',
+      sampling: '采样间隔',
       activities: '活动',
       evidence: '截图依据',
       observations: '采集证据',
@@ -468,6 +468,7 @@ window.__ModuleLoader__.load({
       const denied = Boolean(state && state.permission === 'denied')
       const started = Boolean(state && (Number(state.captures) > 0 || records.length > 0))
       const intervalSec = (state && state.analysisWindowSec) || 300
+      const sampleIntervalSec = state?.sampleIntervalSec ?? 5
       const intervalOptions = Array.from(new Set([30, 60, 120, 300, intervalSec]))
         .sort((left, right) => left - right)
 
@@ -494,6 +495,22 @@ window.__ModuleLoader__.load({
             h('span', { className: 'st-status', role: 'status', 'aria-live': 'polite' },
               h('span', { className: `st-dot${busy ? ' busy' : running && !screenWaiting ? ' live' : ''}` }),
               statusText,
+            ),
+            h('label', { className: 'st-interval' },
+              t('sampling'),
+              h('input', {
+                key: sampleIntervalSec,
+                className: 'st-select', type: 'number', min: 1, step: 1,
+                style: { width: '76px' }, defaultValue: String(sampleIntervalSec), disabled: pending || !state,
+                'aria-label': t('sampling'),
+                onBlur: (event) => {
+                  const value = Number(event.target.value)
+                  event.target.value = String(sampleIntervalSec)
+                  if (value !== sampleIntervalSec) void act('setSampleInterval', { intervalSec: value })
+                },
+                onKeyDown: (event) => { if (event.key === 'Enter') event.currentTarget.blur() },
+              }),
+              t('seconds'),
             ),
             h('label', { className: 'st-interval' },
               t('interval'),
@@ -542,7 +559,7 @@ window.__ModuleLoader__.load({
               }, t('clear'))),
           ),
           state && h('div', { className: 'st-stats' },
-            h('span', null, `${t('sampling')}: ${state.captureFps || 2} fps`),
+            h('span', null, `${t('sampling')}: ${sampleIntervalSec} ${t('seconds')}`),
             h('span', null, `${t('samples')}: ${state.captures || 0}`),
             h('span', null, `${t('keyframes')}: ${state.keyframes || 0}`),
             h('span', null, `${t('activities')}: ${records.length}`),

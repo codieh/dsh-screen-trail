@@ -8,7 +8,6 @@ import UniformTypeIdentifiers
 
 let surfaceMarker = "[dsh-screen-trail]"
 let once = CommandLine.arguments.contains("--once")
-let fps = 2
 let outputLock = NSLock()
 
 func send(_ value: [String: Any]) {
@@ -30,6 +29,15 @@ func fail(_ message: String, error: Error? = nil) -> Never {
     send(payload)
     exit(1)
 }
+
+// 采样周期直接传到 ScreenCaptureKit；非法参数必须报错，不能静默恢复为默认值。
+let sampleIntervalSec: Int64
+if let argument = CommandLine.arguments.first(where: { $0.hasPrefix("--sample-interval-sec=") }) {
+    guard let value = Int64(String(argument.dropFirst("--sample-interval-sec=".count))), value > 0 else {
+        fail("Sample interval must be a positive integer in seconds")
+    }
+    sampleIntervalSec = value
+} else { sampleIntervalSec = 5 }
 
 func sourceUnavailable(_ error: Error) -> Bool {
     let error = error as NSError
@@ -71,7 +79,7 @@ if CommandLine.arguments.contains("--self-test") {
     precondition(!sourceUnavailable(NSError(domain: SCStreamError.errorDomain, code: SCStreamError.Code.userDeclined.rawValue)))
     precondition(!sourceUnavailable(NSError(domain: SCStreamError.errorDomain, code: SCStreamError.Code.userStopped.rawValue)))
     precondition(!sourceUnavailable(NSError(domain: "Other", code: SCStreamError.Code.noCaptureSource.rawValue)))
-    send(["type": "self-test", "ok": true, "fps": fps, "screenAwake": primaryScreenAwake(),
+    send(["type": "self-test", "ok": true, "sampleIntervalSec": sampleIntervalSec, "screenAwake": primaryScreenAwake(),
           "screenPermission": CGPreflightScreenCaptureAccess()])
     exit(0)
 }
@@ -178,7 +186,7 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         let config = SCStreamConfiguration()
         config.width = max(1, Int(Double(display.width) * ratio))
         config.height = max(1, Int(Double(display.height) * ratio))
-        config.minimumFrameInterval = CMTime(value: 1, timescale: Int32(fps))
+        config.minimumFrameInterval = CMTime(value: sampleIntervalSec, timescale: 1)
         config.queueDepth = 3
         config.showsCursor = false
         config.capturesAudio = false
@@ -193,7 +201,7 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
         frameQueue.async {
             if self.waitingForScreen { if let active = self.stream { self.stopStream(active) }; return }
             self.started = true
-            send(["type": "ready", "fps": fps, "displayId": displayId])
+            send(["type": "ready", "sampleIntervalSec": sampleIntervalSec, "displayId": displayId])
             if let sample = self.firstSample, let active = self.stream {
                 self.firstSample = nil
                 self.stream(active, didOutputSampleBuffer: sample, of: .screen)
@@ -216,7 +224,8 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Send
               let status = SCFrameStatus(rawValue: rawStatus) else { fail("ScreenCaptureKit frame metadata is missing") }
         guard status == .complete || status == .idle else { return }
         let tick = ProcessInfo.processInfo.systemUptime
-        guard tick - lastSent >= 0.45 else { return }
+        // 容忍轻微回调抖动，避免系统稍早交付一帧就多跳过整个采样周期。
+        guard tick - lastSent >= Double(sampleIntervalSec) - 0.01 else { return }
         lastSent = tick
         let now = Date().timeIntervalSince1970
         autoreleasepool {

@@ -52,7 +52,7 @@ test('conversation history is supplied by the host, not copied into each new bat
 
 test('host-prepared compacted history does not break event addressing or invoke a plugin summarizer', async (t) => {
   const h = await createHost(); t.after(h.dispose)
-  h.ctx.compaction = { compactIfNeeded: () => { throw new Error('the plugin must not manage compaction') } }
+  h.presetDefinitions.get('standard').compaction.compactIfNeeded = () => { throw new Error('the plugin must not manage compaction') }
   await h.trail.manualCapture(); await h.settle(); const id = h.state().records[0].id
   const stream = h.ctx.llm.stream
   h.ctx.llm.stream = async function* (request) {
@@ -67,12 +67,15 @@ test('host-prepared compacted history does not break event addressing or invoke 
   assert.equal(h.requests.length, 2)
 })
 
-test('a host without an active compaction service is observable, not silently replaced by local memory logic', async (t) => {
+test('a host without an active compaction service fails instead of submitting unbounded history', async (t) => {
   const h = await createHost(); t.after(h.dispose)
+  delete h.presetDefinitions.get('standard').compaction
   await h.trail.manualCapture(); await h.settle()
   assert.equal(h.state().lastAnalysis.contextOwner, 'harness')
   assert.equal(h.state().lastAnalysis.compactionAvailable, false)
-  assert.equal(h.state().lastError, null)
+  assert.equal(h.state().lastAnalysis.errorCode, 'ANALYSIS_COMPACTION_MISSING')
+  assert.equal(h.requests.length, 0)
+  assert.equal(h.state().observations[0].analysisStatus, 'failed')
 })
 
 test('existing event descriptions can be corrected from conversation context without new images', async (t) => {

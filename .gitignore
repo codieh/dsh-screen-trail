@@ -8,3 +8,7 @@ native/module-cache/
 # Never part of the package
 node_modules/
 *.log
+
+# Local CI output
+dist/
+test-results.xml

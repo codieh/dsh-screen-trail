@@ -3,6 +3,7 @@
     - id: screen-trail
       name: '@local/dsh-screen-trail'
       config:
+        sampleIntervalSec: 5
         analysisWindowSec: 300
         analysisMaxTokens: 16384
         autoStart: false

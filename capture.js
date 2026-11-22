@@ -35,8 +35,9 @@ export function decodeFrame(message) {
 
 /** 原生流保持运行，只有选中的帧落盘；不再启动输入监听或逐帧外部转换命令。 */
 export class MacCapture {
-  constructor({ root, onFrame, onPresence, onError, log, maxDimension = 1600, spawnProcess = spawn, setTimer = setTimeout, clearTimer = clearTimeout }) {
-    Object.assign(this, { root, onFrame, onPresence, onError, log, maxDimension, spawn: spawnProcess, setTimer, clearTimer })
+  constructor({ root, onFrame, onPresence, onError, log, maxDimension = 1600, sampleIntervalSec = 5, spawnProcess = spawn, setTimer = setTimeout, clearTimer = clearTimeout }) {
+    if (!Number.isSafeInteger(sampleIntervalSec) || sampleIntervalSec < 1) throw new Error('sampleIntervalSec must be a positive integer')
+    Object.assign(this, { root, onFrame, onPresence, onError, log, maxDimension, sampleIntervalSec, spawn: spawnProcess, setTimer, clearTimer })
     this.state = 'stopped'
     this.epoch = 0
     this.wakeTimer = null
@@ -82,7 +83,7 @@ export class MacCapture {
       let failed = false
       let buffer = ''
       let detail = ''
-      const child = this.spawn(binary, [`--dimension=${this.maxDimension}`, ...(single ? ['--once'] : [])], { stdio: ['ignore', 'pipe', 'pipe'] })
+      const child = this.spawn(binary, [`--dimension=${this.maxDimension}`, `--sample-interval-sec=${this.sampleIntervalSec}`, ...(single ? ['--once'] : [])], { stdio: ['ignore', 'pipe', 'pipe'] })
       if (!single) this.streamChild = child
       this.jobs.add(child)
       const timer = this.setTimer(() => fail(new Error(this.recovering && !single
@@ -122,7 +123,7 @@ export class MacCapture {
               ready = true
               if (!single) {
                 this.state = 'ready'
-                this.log('capture.ready', { displayId: message.displayId, fps: message.fps })
+                this.log('capture.ready', { displayId: message.displayId, sampleIntervalSec: message.sampleIntervalSec })
                 this.onPresence({ type: 'ready', at: Date.now() })
                 if (!settled) {
                   if (!this.recovering) this.clearTimer(timer)

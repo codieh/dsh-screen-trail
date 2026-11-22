@@ -114,7 +114,8 @@ test('an agent already resumed by the UI is reused without taking its lifecycle 
   const h = await createHost(); t.after(h.dispose)
   await h.trail.manualCapture(); await h.settle(); const id = h.state().analysisSessionId
   await h.trail.analysisHandle.dispose(); h.trail.analysisHandle = null
-  const external = await h.ctx.agents.resume({ resumeSessionId: id, agentOptions: { provider: 'mock', model: 'vision', maxTokens: 16384 } })
+  const external = await h.ctx.agents.resume({ resumeSessionId: id, agentOptions: { provider: 'mock', model: 'vision', maxTokens: 16384 },
+    setup: (agentCtx) => h.ctx.agentPresets.mount(agentCtx, 'standard') })
   t.after(external.dispose)
   await h.trail.manualCapture(); await h.settle()
   assert.equal(h.createdSessions.length, 1); assert.equal(h.resumedSessions.length, 1)
