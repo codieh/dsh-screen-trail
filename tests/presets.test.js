@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { inject } from '../index.js'
+import { inject } from '../dist/index.js'
 import { createHost, root } from './harness.js'
 
 const definition = () => ({ compaction: { config: { auto: true },

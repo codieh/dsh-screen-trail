@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import test from 'node:test'
-import { registerRoutes } from '../index.js'
+import { registerRoutes } from '../dist/index.js'
 import { createHost } from './harness.js'
 
 async function apiHost(t, options) {

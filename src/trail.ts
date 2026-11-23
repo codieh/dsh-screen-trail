@@ -6,6 +6,8 @@ import path from 'node:path'
 import { SimpleSelector, representatives } from './frames.js'
 import { MacCapture, SURFACE_MARKER } from './capture.js'
 import { AnalysisResponse } from './analysis-response.js'
+import type { PluginConfig, RuntimeAdapters, Observation, ModelObservation, ResolvedConfig } from './types.js'
+import type { HostContext, NativeAgent } from './host.js'
 
 const validId = (id) => typeof id === 'string' && /^[A-Za-z0-9-]{4,80}$/.test(id)
 const contextKey = (value) => JSON.stringify([value.bundleId || value.app || '', value.pid || '', value.windowId || '', value.url || value.title || ''])
@@ -18,7 +20,7 @@ function messageDateTime(timestamp) {
   const parts = Object.fromEntries(messageDateFormatter.formatToParts(new Date(timestamp)).map(({ type, value }) => [type, value]))
   return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`
 }
-function integer(name, value, initial, min, max) {
+function integer(name: string, value: unknown, initial: number, min: number, max: number): number {
   if (value === undefined) return initial
   if (!Number.isSafeInteger(Number(value)) || Number(value) < min || Number(value) > max) throw new Error(`${name} must be an integer between ${min} and ${max}`)
   return Number(value)
@@ -84,7 +86,69 @@ class StateWriteError extends Error {
 const evidence = (item) => ({ id: item.id, imageId: item.imageId, at: item.at, lastSeenAt: item.lastSeenAt, context: item.context })
 
 export class ScreenTrail {
-  constructor(ctx, config = {}, runtime = {}) {
+  declare ctx: HostContext;
+  declare io: any;
+  declare run: any;
+  declare now: any;
+  declare uuid: any;
+  declare setTimer: any;
+  declare clearTimer: any;
+  declare root: any;
+  declare shots: any;
+  declare stateFile: any;
+  declare diagnosticsDir: any;
+  declare settings: ResolvedConfig;
+  declare records: any[];
+  declare activities: any[];
+  declare selector: SimpleSelector;
+  declare captureQueue: any[];
+  declare protectedImages: Set<any>;
+  declare activeIds: Set<any>;
+  declare analysisSessionId: any;
+  declare analysisHandle: any;
+  declare analysisWorkspace: any;
+  declare writes: Promise<void>;
+  declare diagnosticWrites: Promise<void>;
+  declare imageWrites: Promise<void>;
+  declare running: boolean;
+  declare analysisEnabled: boolean;
+  declare loaded: boolean;
+  declare disposed: boolean;
+  declare generation: number;
+  declare analysisVersion: number;
+  declare diagnosticEpoch: number;
+  declare sampleTask: Promise<void> | null;
+  declare analysisTask: Promise<void> | null;
+  declare resumeTask: any;
+  declare analysisTimer: any;
+  declare controller: AbortController | null;
+  declare lastModelCallAt: any;
+  declare capturePaused: boolean;
+  declare capturePauseReason: string | null;
+  declare lastPersistAt: number;
+  declare status: {
+        permission: string;
+        lastError: string | null;
+        captures: number;
+        keyframes: number;
+        analyses: number;
+        modelCalls: number;
+        reusedImages: number;
+        extended: number;
+        skipped: number;
+        excluded: number;
+        coalesced: number;
+        ignored: number;
+        selfExcluded: boolean;
+        lastCaptureAt: unknown;
+        lastAnalysisAt: unknown;
+        selection: unknown;
+        lastAnalysis: unknown;
+    };
+  declare captureSource: any;
+  declare ready: Promise<boolean>;
+
+  constructor(ctx: HostContext, config: PluginConfig = {}, runtime: RuntimeAdapters = {}) {
     this.ctx = ctx; this.io = runtime.fs || fs; this.run = runtime.run || runCommand
     this.now = runtime.now || Date.now; this.uuid = runtime.uuid || randomUUID
     this.setTimer = runtime.setTimer || setTimeout; this.clearTimer = runtime.clearTimer || clearTimeout
@@ -388,14 +452,14 @@ export class ScreenTrail {
       this.pumpAnalysis()
     })
   }
-  readActivities(raw, selected, saved, model) {
+  readActivities(raw, selected: Observation[], saved: Array<{ id: string }>, model: string) {
     const activities = []; const used = new Set(); const claimed = new Set()
     if (!Array.isArray(raw?.activities)) throw new Error('analysis reply must contain an activities array')
     const groups = raw.activities
     const byId = new Map(saved.map((activity) => [activity.id, activity]))
     // 图片使用本批顺序号，事件直接绑定稳定 ID；不再由临时历史候选编号决定关联范围。
     for (const [index, item] of groups.entries()) {
-      const frames = [...new Set((Array.isArray(item?.images) ? item.images : []).map((number) => selected[Number(number) - 1]).filter(Boolean))]
+      const frames = [...new Set<Observation>((Array.isArray(item?.images) ? item.images : []).map((number) => selected[Number(number) - 1]).filter(Boolean))]
       const task = item?.task === 0 ? null : item?.task ?? null
       const target = byId.get(task)
       if (task !== null && (typeof task !== 'string' || !target)) throw new Error(`activity ${index + 1} must use a current saved activity ID, not a temporary task number`)
@@ -420,7 +484,7 @@ export class ScreenTrail {
     if (ignoredObservationIds.length) this.log('analysis.partial', { acceptedActivities: activities.length, unusedImages: ignoredObservationIds.length })
     return { activities, ignoredObservationIds }
   }
-  applyActivities(result, selected) {
+  applyActivities(result, selected: Observation[]) {
     const byId = new Map(selected.map((item) => [item.id, item]))
     const ordered = [...result.activities].sort((a, b) => Math.min(...a.observationIds.map((id) => byId.get(id).at)) - Math.min(...b.observationIds.map((id) => byId.get(id).at)))
     for (const change of ordered) {
@@ -519,7 +583,7 @@ export class ScreenTrail {
       ...(options.reasoningEffort === undefined ? {} : { reasoningEffort: options.reasoningEffort }) })
     return agent
   }
-  analysisContext(agent, expectedPreset) {
+  analysisContext(agent: NativeAgent, expectedPreset?: string) {
     const presets = this.ctx.agentPresets
     const agentPreset = presets.composedPreset(agent.ctx) ?? null
     // compaction 位于预设隔离组，agent.ctx.get('compaction') 读不到该服务。
@@ -532,7 +596,7 @@ export class ScreenTrail {
     if (context.compactionAuto === false) reject('ANALYSIS_COMPACTION_DISABLED', `Harness 预设 ${agentPreset} 已关闭自动压缩，已停止提交分析`)
     return context
   }
-  contextMetrics(agent) {
+  contextMetrics(agent: NativeAgent) {
     const meter = this.ctx.tokenMeter
     const { totalTokens, surfaceTokens } = meter.measure(agent.session)
     return { totalTokens, surfaceTokens, contextWindow: meter.contextPressure(agent.session).contextWindow ?? null }
@@ -625,7 +689,7 @@ export class ScreenTrail {
         context: Object.fromEntries(Object.entries(item.context).filter(([key]) => key !== 'bundleId')), trigger: item.reason }))
       const language = this.settings.locale === 'zh' ? 'Write human-readable strings in Simplified Chinese.' : this.settings.locale === 'en' ? 'Write human-readable strings in English.' : 'Use the dominant language of the observed content.'
       input = { system: prompt, text: `${language}\nAnalysis time: ${messageDateTime(this.now())}\nObservations in time order: ${JSON.stringify(observations)}` }
-      const content = [{ type: 'text', text: input.text }]
+      const content: Array<{ type: 'text'; text: string } | { type: 'image'; attachment: unknown }> = [{ type: 'text', text: input.text }]
       for (const imageId of new Set(selected.map((item) => item.imageId))) {
         const data = await this.io.readFile(path.join(this.shots, `${imageId}.jpg`))
         if (signal.aborted) throw cancellation(signal)

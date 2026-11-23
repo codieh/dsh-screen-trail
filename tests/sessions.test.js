@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createHost, root } from './harness.js'
-import { ScreenTrail } from '../trail.js'
-import { AnalysisResponse } from '../analysis-response.js'
+import { ScreenTrail } from '../dist/trail.js'
+import { AnalysisResponse } from '../dist/analysis-response.js'
 
 const hour = 60 * 60 * 1000
 const messages = (session) => session.events.filter((event) => ['user/message', 'assistant/message'].includes(event.type))

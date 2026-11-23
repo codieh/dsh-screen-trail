@@ -1,3 +1,5 @@
+/** 保持宿主提供的全局脚本协议。 */
+interface Window { __ModuleLoader__: { load(entry: { id: string; factory(require: (id: string) => any): any }): void } }
 window.__ModuleLoader__.load({
   id: '@local/dsh-screen-trail',
   factory(require) {

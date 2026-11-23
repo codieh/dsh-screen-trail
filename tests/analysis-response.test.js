@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { AnalysisResponse } from '../analysis-response.js'
+import { AnalysisResponse } from '../dist/analysis-response.js'
 
 test('text blocks are assembled by index and authoritative block ends are not appended twice', () => {
   const response = new AnalysisResponse()

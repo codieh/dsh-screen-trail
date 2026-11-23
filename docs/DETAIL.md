@@ -66,8 +66,14 @@ Defaults: `sampleIntervalSec: 5`, `analysisWindowSec: 300`, `analysisMaxTokens: 
 
 Run `npm test`. Tests inject frames, storage and responses, including a host-provided compacted-history contract fixture; they do not perform real model compaction or prove judgment accuracy. Evaluate real blank pages, brief PDF appearances, sustained static viewing and short important results separately. Actual recording and model quality require authorised verification.
 
-## Simple CI
+## TypeScript Development
 
-Pushes, pull requests and manual dispatch run one Node.js 24 / Apple Silicon macOS 15 job: unit/package checks, Swift compilation, native no-capture self-tests, then an installable package artifact. Failures block later steps; reports upload on test failure. No Ubuntu, additional Node versions or Intel matrix is run. `npm test` still runs all existing test files without recording or real model calls.
+The six former JavaScript modules now live in `src/*.ts`. `npm run build` cleans and generates JavaScript and declarations in `dist/`. Public export names and the host's JavaScript loading protocol are unchanged, as are Swift capture, persisted state and model messages. After checking out this branch, run `npm ci` and `npm run build` before loading the plugin.
+
+`npm run typecheck` checks all TS sources and adds strict checks for frame selection, model stream assembly and compile-time data contracts. Dynamic host events and parts of UI/state code retain broad types for compatibility; project-wide strict mode is not yet enabled. There are no `@ts-nocheck` escapes. Runtime validation of external JSON/native messages remains necessary and unchanged. `npm test` builds first and tests emitted JavaScript.
+
+## CI Steps
+
+Pushes, pull requests and manual dispatch run one Node.js 24 / Apple Silicon macOS 15 job: locked dependency installation, TS checks, build and unit/package checks, Swift compilation, native no-capture self-tests, then an installable package artifact. Failures block later steps; reports upload on test failure. No Ubuntu, additional Node versions or Intel matrix is run. `npm test` still runs all existing test files without recording or real model calls.
 
 The fixture reads the current observation-only input and checks date formatting, removed fields, uniform selection and sampling intervals. `fixtureActivities` is test-only data for scripted update/merge replies, never model-visible input; these checks do not prove autonomous model association when activity IDs are absent.

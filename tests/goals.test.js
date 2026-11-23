@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createHost, root } from './harness.js'
-import { representatives } from '../frames.js'
+import { representatives } from '../dist/frames.js'
 
 const goal = '在B站观看《中国奇谭2》第9话'
 const browser = { app: 'Microsoft Edge', bundleId: 'com.microsoft.edgemac', pid: 1556, windowId: 194, title: '番剧详情' }

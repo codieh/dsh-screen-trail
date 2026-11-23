@@ -1,5 +1,6 @@
 /** 同时比较全局和局部 RGB 变化；图像差分只决定候选，不决定是否产生新活动。 */
-export function frameDifference(current, previous) {
+import type { Thumbnail } from './types.js'
+export function frameDifference(current: Thumbnail, previous: Thumbnail | null): number {
   if (!previous || current.width !== previous.width || current.height !== previous.height) return 1
   const { width, height, pixels } = current
   let changed = 0; let maxBlockRatio = 0
@@ -25,9 +26,13 @@ export function frameDifference(current, previous) {
 }
 
 export class SimpleSelector {
+  declare frame: Thumbnail | null;
+  declare key: string | null;
+  declare context: string | null;
+
   constructor() { this.reset() }
   reset() { this.frame = null; this.key = null; this.context = null }
-  consider(frame, key, context, manual = false) {
+  consider(frame: Thumbnail, key: string, context: string, manual = false) {
     const score = frameDifference(frame, this.frame)
     if (!manual && this.frame && this.context === context && (key === this.key || score < 0.003)) return { kind: 'extend', score }
     const reason = manual ? 'manual' : !this.frame ? 'first' : context !== this.context ? 'context' : 'change'
@@ -37,13 +42,13 @@ export class SimpleSelector {
 }
 
 /** 固定首尾，其余按等间隔目标时间取最近候选，不对窗口、触发原因或画面变化加权。 */
-export function representatives(records, limit = 6) {
+export function representatives<T extends { at: number }>(records: readonly T[], limit = 6): T[] {
   if (!Number.isSafeInteger(limit) || limit < 2) throw new Error('representative limit must be an integer of at least 2')
   records = [...records].sort((a, b) => a.at - b.at)
   if (records.length <= limit) return [...records]
-  if (limit === 2) return [records[0], records.at(-1)]
+  if (limit === 2) return [records[0], records.at(-1)!]
   const selected = new Set([0, records.length - 1])
-  const first = records[0].at; const span = records.at(-1).at - first
+  const first = records[0].at; const span = records.at(-1)!.at - first
   for (let slot = 1; slot < limit - 1; slot += 1) {
     const target = first + span * slot / (limit - 1)
     let closest = -1

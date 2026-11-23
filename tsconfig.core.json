@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "strict": true, "noEmit": true, "rootDir": "." },
+  "include": ["src/frames.ts", "src/analysis-response.ts", "type-tests/**/*.ts"]
+}

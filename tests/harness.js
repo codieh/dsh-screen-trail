@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { ScreenTrail } from '../trail.js'
+import { ScreenTrail } from '../dist/trail.js'
 
 export const root = '/virtual-home/.dsh/screen-trail'
 export const settle = async () => { for (let i = 0; i < 32; i += 1) await new Promise(setImmediate) }

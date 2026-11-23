@@ -5,27 +5,32 @@
   "type": "module",
   "description": "Native low-frame-rate capture with batched visual analysis and activity-level summaries.",
   "scripts": {
-    "test": "node --test --test-timeout=10000"
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.core.json",
+    "pretest": "npm run build",
+    "test": "node --test --test-timeout=10000",
+    "prepack": "npm run build"
   },
   "exports": {
-    ".": "./index.js",
-    "./client": "./client.js",
+    ".": "./dist/index.js",
+    "./client": "./dist/client.js",
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
   "files": [
-    "index.js",
-    "frames.js",
-    "trail.js",
-    "analysis-response.js",
-    "capture.js",
+    "dist",
     "native",
-    "client.js",
     "cordis.patch.yml",
     "locale/*.json",
     "docs",
     "icon.svg"
   ],
+  "types": "./dist/index.d.ts",
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "@types/node": "^24.0.0",
+    "@types/react": "^18.3.0"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

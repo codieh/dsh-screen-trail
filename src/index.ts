@@ -1,4 +1,9 @@
 import { ScreenTrail } from './trail.js'
+import type { PluginConfig } from './types.js'
+import type { HostContext } from './host.js'
+export type { PluginConfig, Observation, Activity, CaptureFrame, StreamChunk, ModelObservation,
+  WindowContext, Thumbnail, ActivityAnalysis, FinishReason, TokenUsage, CaptureOptions, RuntimeAdapters } from './types.js'
+export type { HostContext, NativeAgent } from './host.js'
 
 export const inject = ['llm', 'webServer', 'attachments', 'agentDefaultModel', 'timer', 'agents', 'sessions', 'sessionPersistence', 'sessionQuery', 'sessionTitle', 'workingDirectory', 'workspaceRegistry', 'agentPresets', 'tokenMeter']
 const prefix = '/screen-trail/api'
@@ -44,7 +49,7 @@ function readJson(request) {
   })
 }
 
-export function apply(ctx, config = {}) {
+export function apply(ctx: HostContext, config: PluginConfig = {}) {
   const trail = new ScreenTrail(ctx, config)
   registerRoutes(ctx, trail)
 }
