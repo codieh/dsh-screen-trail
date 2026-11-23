@@ -32,13 +32,13 @@ function native(mode = 'frame', timers = {}) {
       let closed = false
       child.kill = () => { if (!closed) { closed = true; queueMicrotask(() => child.emit('close', 0)) } }
       child.send = (message) => child.stdout.emit('data', `${JSON.stringify(message)}\n`)
-      children.push(child)
+      child.args = args; children.push(child)
       setImmediate(() => {
         if (closed) return
         if (currentMode === 'hang') return
         if (currentMode === 'failure') { child.send({ type: 'error', message: 'Screen Recording permission required', domain: 'SCStreamErrorDomain', code: -3801 }); return }
         if (currentMode === 'waiting') { child.send({ type: 'waiting', at: 1700000000000, reason: 'screen-sleep' }); return }
-        child.send({ type: 'ready', fps: 2 })
+        child.send({ type: 'ready', sampleIntervalSec: capture.sampleIntervalSec })
         if (currentMode === 'frame') child.send(packet())
         else if (currentMode === 'excluded') child.send({ type: 'excluded', at: 1700000000000, context: { title: 'Harness [dsh-screen-trail]' } })
         if (args.includes('--once')) child.kill()
@@ -61,6 +61,13 @@ test('one long-lived native process supplies frames and stops without a false er
   assert.equal(h.children.length, 1); assert.equal(h.frames.length, 1); assert.equal(h.capture.state, 'ready')
   await h.capture.start(); assert.equal(h.children.length, 1)
   h.capture.stop(); await settle(); assert.equal(h.errors.length, 0); assert.equal(h.capture.state, 'stopped')
+})
+test('sampling interval reaches the native helper and rejects invalid values', async (t) => {
+  const h = native('frame', { sampleIntervalSec: 17 }); t.after(() => h.capture.stop())
+  await h.capture.start()
+  assert.ok(h.children[0].args.includes('--sample-interval-sec=17'))
+  assert.equal(h.logs.find((item) => item.event === 'capture.ready').data.sampleIntervalSec, 17)
+  for (const value of [0, -1, 1.5, NaN]) assert.throws(() => native('frame', { sampleIntervalSec: value }), /positive integer/)
 })
 test('single capture resolves an actual frame and releases its native process', async () => {
   const h = native(); const frame = await h.capture.once(); await settle()

@@ -20,23 +20,9 @@ defaults:
 
 jobs:
   test:
-    name: Node ${{ matrix.node }} / ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: Checks (Node 24 / macOS)
+    runs-on: macos-15
     timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            node: 22
-          - os: ubuntu-24.04
-            node: 24
-          - os: ubuntu-24.04
-            node: 26
-          - os: macos-15
-            node: 24
-          - os: macos-15-intel
-            node: 24
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -46,7 +32,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 24
           package-manager-cache: false
 
       # 项目没有外部依赖或锁文件，不运行会直接失败的 npm ci。
@@ -62,13 +48,12 @@ jobs:
         if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: test-results-node-${{ matrix.node }}-${{ matrix.os }}
+          name: test-results
           path: test-results.xml
           if-no-files-found: error
           retention-days: 7
 
       - name: Compile native capture helper
-        if: runner.os == 'macOS'
         run: >-
           xcrun swiftc -swift-version 5 -O
           -module-cache-path "$RUNNER_TEMP/swift-module-cache"
@@ -76,28 +61,10 @@ jobs:
 
       # 只走内置自测分支，不录屏、不改变屏幕状态，也不请求录屏授权。
       - name: Run native self-tests
-        if: runner.os == 'macOS'
         run: |
           "$RUNNER_TEMP/screen-trail-capture" --self-test
           "$RUNNER_TEMP/screen-trail-capture" --self-test-screen-events
           "$RUNNER_TEMP/screen-trail-capture" --self-test-screen-check
-
-  package:
-    name: Package plugin
-    needs: test
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          package-manager-cache: false
 
       - name: Create installable package
         run: |

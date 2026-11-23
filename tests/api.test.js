@@ -42,6 +42,33 @@ test('API rejects remote, cross-origin and malformed control requests', async (t
   assert.equal((await host.request('control', { method: 'POST', body: null })).code, 400)
 })
 
+test('sampling interval control persists seconds and rejects invalid input', async (t) => {
+  const host = await apiHost(t)
+  const response = await host.request('control', { method: 'POST', body: { action: 'setSampleInterval', intervalSec: 15 } })
+  assert.equal(response.code, 200)
+  assert.equal(JSON.parse(response.data).sampleIntervalSec, 15)
+  const history = JSON.parse(host.files.get(host.trail.stateFile))
+  assert.equal(history.sampleIntervalSec, 15)
+  const restored = await createHost({ history }); t.after(restored.dispose)
+  assert.equal(restored.state().sampleIntervalSec, 15)
+  const invalid = await host.request('control', { method: 'POST', body: { action: 'setSampleInterval', intervalSec: 0 } })
+  assert.equal(invalid.code, 500)
+  assert.equal(host.state().sampleIntervalSec, 15)
+})
+
+test('changing sampling interval does not cancel in-flight analysis', async (t) => {
+  const host = await apiHost(t, { hold: true })
+  await host.trail.start(); await host.advance(300000)
+  assert.equal(host.state().analyzing, true)
+  await host.trail.setSampleInterval(10)
+  assert.equal(host.state().running, true)
+  assert.equal(host.state().analyzing, true)
+  assert.equal(host.trail.controller.signal.aborted, false)
+  host.release(); await host.settle()
+  assert.equal(host.state().records.length, 1)
+  assert.equal(host.state().lastError, null)
+})
+
 test('manual analysis processes queued images without capturing the recorder page', async (t) => {
   const host = await apiHost(t)
   await host.request('control', { method: 'POST', body: { action: 'start' } }); await host.settle()

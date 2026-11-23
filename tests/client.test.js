@@ -57,6 +57,10 @@ test('panel shows observation, analysis, queue counts and keyframe reasons', () 
     records: [], observations: [{ id: 'frame-one', at: Date.now(), reason: 'change', analysisStatus: 'pending' }],
   })
   const content = text(tree)
+  const samplingInput = allNodes(tree).find((node) => node.type === 'input' && node.props.type === 'number')
+  assert.equal(samplingInput.props.defaultValue, '2')
+  assert.equal(samplingInput.props.min, 1)
+  assert.ok(content.includes('采样间隔: 2 秒'))
   for (const expected of ['观察中 · 分析中', '已采样: 8', '观察记录: 2', '待分析: 1', '画面变化', '等待分析']) {
     assert.ok(content.includes(expected), expected)
   }

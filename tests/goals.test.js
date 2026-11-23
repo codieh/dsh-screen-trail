@@ -17,14 +17,14 @@ const history = () => ({ version: 4, records: [], activities: [
   activity('other', '购买键盘', 1699999940000),
 ] })
 
-test('five minutes of continuous changes do not hit the eighty-record history limit', async (t) => {
+test('five minutes at the default sampling interval fit the pending capacity', async (t) => {
   const h = await createHost(); t.after(h.dispose)
   await h.trail.start(); await h.settle()
-  for (let i = 1; i < 600; i += 1) await h.frame(i % 2 ? 255 : 0)
-  assert.equal(h.state().observations.length, 600)
-  assert.equal(h.state().pendingCapacity, 780)
+  for (let i = 1; i < 60; i += 1) await h.frame(i % 2 ? 255 : 0, { elapsed: 5000 })
+  assert.equal(h.state().observations.length, 60)
+  assert.equal(h.state().pendingCapacity, 80)
   assert.equal(h.state().capturePaused, false); assert.equal(h.requests.length, 0)
-  await h.advance(500)
+  await h.advance(5000)
   assert.equal(h.requests.length, 1); assert.equal(h.requests[0].observations.length, 20)
   assert.equal(h.state().records.length, 1); assert.equal(h.state().unfinishedCount, 0)
   assert.equal(h.state().observations.length, 20)
@@ -32,7 +32,7 @@ test('five minutes of continuous changes do not hit the eighty-record history li
   await h.advance(299999); assert.equal(h.requests.length, 1)
 })
 
-test('time buckets cover a whole five-minute window rather than only early switches', () => {
+test('uniform samples cover the full window rather than only early switches', () => {
   const records = Array.from({ length: 600 }, (_, index) => ({
     id: `frame-${index}`, imageId: `image-${index}`, at: index * 500, lastSeenAt: index * 500,
     reason: index < 100 ? 'context' : 'change', score: index < 100 ? 1 : 0.01,
@@ -43,10 +43,11 @@ test('time buckets cover a whole five-minute window rather than only early switc
   assert.deepEqual(representatives([...records].reverse(), 20), selected)
 })
 
-test('new resources are preferred over duplicate candidates within a time bucket', () => {
+test('new resources and context changes do not alter uniform selection', () => {
   const records = Array.from({ length: 8 }, (_, i) => ({ id: `frame-${i}`, imageId: 'duplicate', at: i, reason: 'change', score: 1 }))
-  records[2].imageId = 'useful-result'; records[2].score = 0.01
-  assert.ok(representatives(records, 4).includes(records[2]))
+  const original = representatives(records, 4).map((item) => item.id)
+  records[3].imageId = 'new-resource'; records[3].reason = 'context'; records[3].score = 100
+  assert.deepEqual(representatives(records, 4).map((item) => item.id), original)
 })
 
 test('player, details and playback form one goal with phases and a meaningful cover', async (t) => {
@@ -78,7 +79,7 @@ test('one five-minute batch can produce multiple independent goals in the same b
 })
 
 test('an existing goal continues across batches even when its phase label changes', async (t) => {
-  const h = await createHost({ reply: ({ saved, observations, requests }) => ({ activities: [{
+  const h = await createHost({ reply: ({ fixtureActivities: saved, observations, requests }) => ({ activities: [{
     task: saved[0]?.id ?? null, goal, images: observations.map((item) => item.number),
     activity: requests.length === 1 ? '选择《中国奇谭2》剧集' : '观看《中国奇谭2》第9话', summary: '选择剧集并开始观看。',
   }] }) }); t.after(h.dispose)
@@ -86,7 +87,7 @@ test('an existing goal continues across batches even when its phase label change
   const id = h.state().records[0].id
   await h.frame(255); await h.advance(300000)
   assert.equal(h.state().records.length, 1); assert.equal(h.state().records[0].id, id)
-  assert.equal(h.requests[1].saved[0].id, id)
+  assert.equal(h.state().lastAnalysis.decisions[0].activityId, id)
 })
 
 test('explicitly new work is not silently merged by a matching label and window', async (t) => {
@@ -99,7 +100,7 @@ test('explicitly new work is not silently merged by a matching label and window'
 })
 
 test('later evidence consolidates previously split phases while preserving an unrelated goal', async (t) => {
-  const h = await createHost({ history: history(), reply: ({ saved, observations }) => ({ activities: [{
+  const h = await createHost({ history: history(), reply: ({ fixtureActivities: saved, observations }) => ({ activities: [{
     task: saved.find((item) => item.activity.includes('打开')).id,
     mergeTasks: saved.filter((item) => /继续观看|浏览《/.test(item.activity)).map((item) => item.id),
     goal, images: observations.map((item) => item.number), cover: 1,
@@ -119,7 +120,7 @@ test('later evidence consolidates previously split phases while preserving an un
 })
 
 test('old fragmented goals may merge without inventing a new screenshot association', async (t) => {
-  const h = await createHost({ history: history(), reply: ({ saved }) => ({ activities: [{
+  const h = await createHost({ history: history(), reply: ({ fixtureActivities: saved }) => ({ activities: [{
     task: saved.find((item) => item.activity.includes('打开')).id,
     mergeTasks: saved.filter((item) => /继续观看|浏览《/.test(item.activity)).map((item) => item.id),
     goal, images: [], cover: 0, activity: '观看《中国奇谭2》第9话', summary: '打开播放页、查看详情后观看同一剧集。',
@@ -130,7 +131,7 @@ test('old fragmented goals may merge without inventing a new screenshot associat
 })
 
 test('supporting lookup keeps the existing main goal and cover', async (t) => {
-  const h = await createHost({ reply: ({ observations, saved }) => ({ activities: [{
+  const h = await createHost({ reply: ({ observations, fixtureActivities: saved }) => ({ activities: [{
     task: saved[0]?.id ?? null, goal: '修复支付接口超时', images: observations.map((item) => item.number), cover: saved.length ? 0 : 1,
     activity: '修复支付接口超时', summary: saved.length ? '编写修复代码，并查阅相关接口文档。' : '编写支付接口修复代码。',
   }] }) }); t.after(h.dispose)

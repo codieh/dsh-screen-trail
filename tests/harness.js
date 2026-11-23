@@ -48,12 +48,13 @@ export async function createHost({ hold = false, reply, corrupt = false, writeEr
       resolveModelInfo: async () => modelInfo,
       stream: async function* (request) {
         const input = request.messages.findLast((message) => message.role === 'user'
-          && message.content.some((item) => item.type === 'text' && item.text.includes('Saved activities state: ')))
-        const text = input.content.find((item) => item.type === 'text' && item.text.includes('Saved activities state: ')).text.split('\n')
+          && message.content.some((item) => item.type === 'text' && item.text.includes('Observations in time order: ')))
+        if (!input) throw new Error('analysis input is missing observations')
+        const text = input.content.find((item) => item.type === 'text' && item.text.includes('Observations in time order: ')).text.split('\n')
         const observations = JSON.parse(text.find((line) => line.startsWith('Observations in time order: ')).slice('Observations in time order: '.length))
-        const timeline = JSON.parse(text.find((line) => line.startsWith('Batch timeline (all observations): ')).slice('Batch timeline (all observations): '.length))
-        const saved = JSON.parse(text.find((line) => line.startsWith('Saved activities state: ')).slice('Saved activities state: '.length))
-        requests.push({ ...request, at: now, observations, timeline, saved })
+        requests.push({ ...request, at: now, observations })
+        // 仅供预设回复构造合法引用，不属于模型请求；这些测试不验证模型能否自行获知事件 ID。
+        const fixtureActivities = trail.activities.map((item) => ({ id: item.id, activity: item.analysis.activity }))
         if (hold) {
           let aborted
           try {
@@ -64,9 +65,9 @@ export async function createHost({ hold = false, reply, corrupt = false, writeEr
             })])
           } finally { request.signal.removeEventListener('abort', aborted) }
         }
-        const result = reply === undefined ? { activities: [{ task: saved[0]?.id ?? null,
+        const result = reply === undefined ? { activities: [{ task: fixtureActivities[0]?.id ?? null,
           images: observations.map((item) => item.number), goal: '完成项目代码修改与验证', activity: '编写代码', summary: `第 ${requests.length} 次请求整理活动`, change: '修改并验证代码。' }] }
-          : typeof reply === 'function' ? reply({ observations, timeline, saved, requests }) : reply
+          : typeof reply === 'function' ? reply({ observations, fixtureActivities, requests }) : reply
         yield { type: 'text-delta', index: 0, text: typeof result === 'string' ? result : JSON.stringify(result) }
         if (usage) yield { type: 'usage', usage }
         if (finishReason) yield { type: 'finish', reason: finishReason }

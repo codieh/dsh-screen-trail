@@ -9,16 +9,14 @@ const history = () => ({ version: 4, records: [], activities: Array.from({ lengt
     context: frame.context, evidence: [frame], analysis: { activity: `项目${index}`, summary: `项目${index}的当前已保存结果。` } }
 }) })
 
-test('the whole current artifact state is addressable, not a recent-eight or exact-image candidate set', async (t) => {
+test('current output records are not resent as a database snapshot', async (t) => {
   const stored = history()
   const h = await createHost({ history: stored }); t.after(h.dispose)
   await h.trail.manualCapture(); await h.settle()
   const request = h.requests[0]
-  assert.deepEqual(request.saved.map((item) => item.id), stored.activities.map((item) => item.id))
-  assert.equal(request.saved.length, 14)
-  assert.ok(request.saved.every((item) => !('number' in item) && !('context' in item)))
-  assert.equal(request.messages.at(-1).content[0].text.includes('Recent activities:'), false)
-  assert.match(request.system, /current output database, not a selected conversational memory/)
+  assert.doesNotMatch(request.messages.at(-1).content[0].text, /Saved activities state|Recent activities|activity-past-/)
+  assert.equal('saved' in request, false)
+  assert.equal(h.state().records.length, 14)
 })
 
 test('stable IDs still update an older event when the saved-state ordering changes', async (t) => {
@@ -32,7 +30,7 @@ test('stable IDs still update an older event when the saved-state ordering chang
   assert.equal(h.state().records.length, 14)
   assert.equal(h.state().records.find((item) => item.id === 'activity-past-0').analysis.activity, '继续项目0')
   assert.equal(h.state().records.find((item) => item.id === 'activity-past-13').analysis.activity, '项目13')
-  assert.notEqual(h.requests[0].saved[0].id, h.requests[1].saved[0].id)
+  assert.equal(h.state().lastAnalysis.decisions[0].activityId, 'activity-past-0')
 })
 
 test('conversation history is supplied by the host, not copied into each new batch by the plugin', async (t) => {
@@ -113,13 +111,13 @@ test('old temporary task numbers and missing output IDs are protocol errors, not
   }
 })
 
-test('a new native conversation after an eight-hour gap still receives the current output state', async (t) => {
+test('new conversations do not receive an extra output-state snapshot', async (t) => {
   const h = await createHost(); t.after(h.dispose)
   await h.trail.manualCapture(); await h.settle(); const first = h.state().analysisSessionId
   const eventId = h.state().records[0].id
   await h.advance(8 * 60 * 60 * 1000); h.setScreen(255); await h.trail.manualCapture(); await h.settle()
   assert.notEqual(h.state().analysisSessionId, first)
   assert.equal(h.requests[1].messages.length, 1)
-  assert.equal(h.requests[1].saved[0].id, eventId)
+  assert.ok(!h.requests[1].messages[0].content[0].text.includes(eventId))
   assert.equal(h.state().records.length, 1)
 })

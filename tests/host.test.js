@@ -5,7 +5,7 @@ import { createHost, root } from './harness.js'
 test('a fresh session collects first and waits five minutes before analysing', async (t) => {
   const h = await createHost(); t.after(h.dispose)
   await h.trail.start(); await h.settle()
-  assert.equal(h.state().captureFps, 2); assert.equal(h.state().analysisWindowSec, 300)
+  assert.equal(h.state().sampleIntervalSec, 5); assert.equal(h.state().analysisWindowSec, 300)
   assert.equal(h.state().observations.length, 1); assert.equal(h.state().records.length, 0); assert.equal(h.requests.length, 0)
   await h.advance(299999); assert.equal(h.requests.length, 0)
   await h.advance(1); assert.equal(h.requests.length, 1); assert.equal(h.state().records.length, 1)
@@ -121,8 +121,9 @@ test('corrupt history is reported and never replaced with empty history', async 
 test('version one history migrates without losing its screenshot or summary', async (t) => {
   const h = await createHost({ history: { version: 1, records: [{ id: 'legacy-frame', at: 1699999990000, analysis: { activity: '阅读', summary: '旧版记录。' } }] } }); t.after(h.dispose)
   assert.equal(h.state().records[0].evidence[0].imageId, 'legacy-frame')
+  assert.equal(h.state().records[0].analysis.summary, '旧版记录。')
   await h.trail.manualCapture(); await h.settle()
-  assert.match(h.requests[0].messages[0].content[0].text, /旧版记录/)
+  assert.doesNotMatch(h.requests[0].messages[0].content[0].text, /旧版记录/)
   assert.equal(JSON.parse(h.files.get(`${root}/state.json`)).version, 4)
 })
 

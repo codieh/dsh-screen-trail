@@ -65,3 +65,9 @@ The latest 50 diagnostics preserve native session/batch/selected/saved-event IDs
 Defaults: `sampleIntervalSec: 5`, `analysisWindowSec: 300`, `analysisMaxTokens: 16384`, `maxDimension: 1600`, `retention: 80`, `autoStart: false`. Sampling and analysis intervals are independent; the saved UI choice takes precedence over initial sampling configuration. Other old event-trigger timing settings are retired with a migration log. Optional model controls remain supported.
 
 Run `npm test`. Tests inject frames, storage and responses, including a host-provided compacted-history contract fixture; they do not perform real model compaction or prove judgment accuracy. Evaluate real blank pages, brief PDF appearances, sustained static viewing and short important results separately. Actual recording and model quality require authorised verification.
+
+## Simple CI
+
+Pushes, pull requests and manual dispatch run one Node.js 24 / Apple Silicon macOS 15 job: unit/package checks, Swift compilation, native no-capture self-tests, then an installable package artifact. Failures block later steps; reports upload on test failure. No Ubuntu, additional Node versions or Intel matrix is run. `npm test` still runs all existing test files without recording or real model calls.
+
+The fixture reads the current observation-only input and checks date formatting, removed fields, uniform selection and sampling intervals. `fixtureActivities` is test-only data for scripted update/merge replies, never model-visible input; these checks do not prove autonomous model association when activity IDs are absent.

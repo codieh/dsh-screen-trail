@@ -23,9 +23,9 @@ test('capacity holds capture only, then automatically resumes after analysis', a
   assert.equal(h.state().lastError, null)
 })
 
-test('retired capture timing is migrated explicitly to the simplified defaults', async (t) => {
+test('sampling interval is respected while retired analysis settings are migrated', async (t) => {
   const h = await createHost({ config: { sampleIntervalSec: 2, eventsEnabled: true, analysisIntervalSec: 10 } }); t.after(h.dispose)
-  assert.equal(h.state().captureFps, 2); assert.equal(h.state().analysisWindowSec, 300)
+  assert.equal(h.state().sampleIntervalSec, 2); assert.equal(h.state().analysisWindowSec, 300)
   assert.ok(h.logs.some((line) => line.includes('config.migrated')))
 })
 
