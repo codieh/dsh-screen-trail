@@ -50,6 +50,21 @@ function text(tree) {
   return tree.children.map(text).join(' ')
 }
 
+test('model settings form provides model, reasoning and explicit save controls', () => {
+  const tree = renderPanel({ ready: true, records: [], observations: [],
+    modelSettings: { provider: 'mock', model: 'vision', reasoningEffort: 'low' } })
+  const component = allNodes(tree).find((node) => node.type?.name === 'ModelSettings')
+  const form = component.type(component.props)
+  const nodes = allNodes(form)
+  const model = nodes.find((node) => node.type === 'select' && node.props['aria-label'] === '分析模型')
+  const effort = nodes.find((node) => node.type === 'select' && node.props['aria-label'] === '思考强度')
+  assert.equal(model.props.value, '["mock","vision"]')
+  assert.equal(effort.props.value, 'low')
+  assert.ok(text(form).includes('跟随宿主模型'))
+  assert.ok(text(form).includes('模型默认'))
+  assert.ok(nodes.some((node) => node.type === 'button' && text(node) === '保存模型设置'))
+})
+
 test('panel shows observation, analysis, queue counts and keyframe reasons', () => {
   const tree = renderPanel({
     ready: true, running: true, busy: true, sampling: false, analyzing: true,

@@ -37,7 +37,7 @@ test('npm package contains valid runtime files but no development or local data'
 
   // 除显式入口外，间接导入、宿主补丁和首次启动要编译的 Swift 源码也必须齐全。
   for (const file of ['package.json', 'index.js', 'client.js', 'trail.js', 'frames.js',
-    'capture.js', 'analysis-response.js', 'native/capture.swift', 'cordis.patch.yml',
+    'capture.js', 'analysis-response.js', 'event-tools.js', 'native/capture.swift', 'cordis.patch.yml',
     'locale/en.json', 'locale/zh.json', 'icon.svg', 'docs/DETAIL.md', 'docs/DETAIL.zh.md', 'docs/preview.svg']) {
     assert.ok(files.includes(file), `required runtime file missing from package: ${file}`)
   }

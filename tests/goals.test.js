@@ -28,7 +28,7 @@ test('five minutes at the default sampling interval fit the pending capacity', a
   assert.equal(h.requests.length, 1); assert.equal(h.requests[0].observations.length, 20)
   assert.equal(h.state().records.length, 1); assert.equal(h.state().unfinishedCount, 0)
   assert.equal(h.state().observations.length, 20)
-  assert.ok(h.logs.some((line) => line.includes('observation.discarded')))
+  assert.ok(h.logs.some((line) => line.includes('events.committed')))
   await h.advance(299999); assert.equal(h.requests.length, 1)
 })
 
@@ -114,7 +114,7 @@ test('later evidence consolidates previously split phases while preserving an un
   for (const frame of record.evidence) assert.ok((await h.trail.image(frame.id)).length)
   const stored = JSON.parse(h.files.get(`${root}/state.json`))
   assert.equal(stored.activities.length, 2)
-  assert.ok(h.logs.some((line) => line.includes('activity.merged')))
+  assert.ok(h.logs.some((line) => line.includes('"action":"merged"')))
   const diagnostic = JSON.parse(h.files.get(h.state().lastAnalysis.diagnosticFile))
   assert.deepEqual(new Set(diagnostic.decisions[0].mergeActivityIds), new Set(['activity-details', 'activity-playing']))
 })

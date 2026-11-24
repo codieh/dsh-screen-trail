@@ -16,7 +16,7 @@ test('current output records are not resent as a database snapshot', async (t) =
   const request = h.requests[0]
   assert.doesNotMatch(request.messages.at(-1).content[0].text, /Saved activities state|Recent activities|activity-past-/)
   assert.equal('saved' in request, false)
-  assert.equal(h.state().records.length, 14)
+  assert.equal(h.state().records.length, 15)
 })
 
 test('stable IDs still update an older event when the saved-state ordering changes', async (t) => {
@@ -40,7 +40,7 @@ test('conversation history is supplied by the host, not copied into each new bat
   h.setScreen(255, { app: 'Editor', title: 'new-observation-marker' })
   await h.trail.manualCapture(); await h.settle()
   const request = h.requests[1]
-  assert.equal(request.messages.length, 3)
+  assert.equal(request.messages.length, 4)
   assert.ok(request.messages[0].content[0].text.includes('historical-context-marker'))
   const current = request.messages.at(-1).content[0].text
   assert.equal(current.includes('historical-context-marker'), false)
@@ -49,7 +49,11 @@ test('conversation history is supplied by the host, not copied into each new bat
 })
 
 test('host-prepared compacted history does not break event addressing or invoke a plugin summarizer', async (t) => {
-  const h = await createHost(); t.after(h.dispose)
+  const h = await createHost({ toolScript: async ({ call }) => {
+    const found = await call('find_events', { query: '编写代码' })
+    await call('write_events', { changes: [{ action: found.events.length ? 'update' : 'create',
+      ...(found.events.length ? { id: found.events[0].id } : {}), images: [1], activity: '编写代码', summary: '继续编写代码。' }] })
+  } }); t.after(h.dispose)
   h.presetDefinitions.get('standard').compaction.compactIfNeeded = () => { throw new Error('the plugin must not manage compaction') }
   await h.trail.manualCapture(); await h.settle(); const id = h.state().records[0].id
   const stream = h.ctx.llm.stream
@@ -106,7 +110,7 @@ test('old temporary task numbers and missing output IDs are protocol errors, not
     await h.trail.manualCapture(); await h.settle()
     assert.equal(h.state().records.length, 14)
     assert.equal(h.state().observations[0].analysisStatus, 'failed')
-    assert.match(h.state().lastError, /saved activity ID/)
+    assert.match(h.state().lastError, /event not found/)
     assert.equal(h.state().lastAnalysis.outcome, 'failed')
   }
 })
@@ -119,5 +123,5 @@ test('new conversations do not receive an extra output-state snapshot', async (t
   assert.notEqual(h.state().analysisSessionId, first)
   assert.equal(h.requests[1].messages.length, 1)
   assert.ok(!h.requests[1].messages[0].content[0].text.includes(eventId))
-  assert.equal(h.state().records.length, 1)
+  assert.equal(h.state().records.length, 2)
 })

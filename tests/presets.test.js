@@ -124,14 +124,14 @@ test('cancellation during preset mounting cannot publish a late analysis agent',
   assert.equal(h.ctx.agents.get(h.createdSessions[0]), undefined)
 })
 
-test('host pre-step compaction runs with execution tools blocked and is traced without summary text', async (t) => {
+test('host pre-step compaction runs without plugin tool restrictions and is traced without summary text', async (t) => {
   const preset = definition()
   // 这是宿主生命周期契约，不是插件直接调用 compactIfNeeded 的替代实现。
   preset.beforeStep = async ({ agent, append, turn }) => {
     const previous = agent.session.events.filter((event) => event.type === 'assistant/message').at(-1)
     if (!previous) return
-    assert.deepEqual(agent.toolRestriction, { allow: [] })
-    assert.match(agent.toolGuard({ name: 'run_code' }), /不执行工具/)
+    assert.equal(agent.toolRestriction, null)
+    assert.equal(agent.toolGuard, null)
     const compactionId = `host-compaction-${turn}`
     agent.session.measuredTokens = 900000
     append('compaction/start', { compactionId, turn })

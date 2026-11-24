@@ -87,14 +87,14 @@ test('invalid JSON after a normal stop keeps the precise parse error and raw res
   assert.equal(JSON.parse(host.files.get(diagnostic.diagnosticFile)).reply, reply)
 })
 
-test('structured extraction uses an explicit output budget and the advertised lowest reasoning effort', async (t) => {
+test('unconfigured reasoning follows the advertised model default with an explicit output budget', async (t) => {
   const host = await createHost({ modelInfo: { inputModalities: ['image'], reasoning: { defaultEffort: 'high', efforts: [{ id: 'off' }, { id: 'high' }] } } })
   t.after(host.dispose)
   await host.trail.manualCapture(); await host.settle()
   assert.equal(host.requests[0].maxTokens, 16384)
-  assert.equal(host.requests[0].reasoningEffort, 'off')
+  assert.equal(host.requests[0].reasoningEffort, 'high')
   assert.equal(host.state().lastAnalysis.adapterDefaultEffort, 'high')
-  assert.equal(host.state().lastAnalysis.reasoningEffort, 'off')
+  assert.equal(host.state().lastAnalysis.reasoningEffort, 'high')
 })
 
 test('clear removes diagnostics, raw samples and cache and prevents late metadata work from writing back', async (t) => {

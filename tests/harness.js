@@ -10,12 +10,12 @@ export function makeFrame(value, context, at) {
 }
 
 /** 所有屏幕帧、时钟、磁盘和模型都注入，回归测试不会读取真实桌面或调用云端。 */
-export async function createHost({ hold = false, reply, corrupt = false, writeError = false, history, captureError, captureGate, conversations = new Map(), workspaces = new Map(), workspaceError, startAt = 1700000000000,
+export async function createHost({ hold = false, reply, toolScript, corrupt = false, writeError = false, history, captureError, captureGate, conversations = new Map(), workspaces = new Map(), workspaceError, startAt = 1700000000000,
   finishReason = { kind: 'stop' }, usage = { inputTokens: 100, outputTokens: 200 }, modelInfo = { inputModalities: ['image'] }, defaultPreset = 'standard',
   presetDefinitions = new Map([['standard', { compaction: { config: { auto: true }, compactIfNeeded: () => { throw new Error('compaction belongs to the host loop') } } }]]), config = {} } = {}) {
   const files = new Map(); const removed = []; const requests = []; const logs = []; const commands = []; const timers = new Map()
   const liveAgents = new Map(); const createdSessions = []; const resumedSessions = []; const flushedSessions = []
-  const sessionListeners = new Set()
+  const sessionListeners = new Set(); const registeredTools = new Map(); let toolCallId = 0
   const presetBindings = new WeakMap(); const mountedPresets = []
   let now = startAt; let seq = conversations.size * 10000; let timerSeq = 0; let screenValue = 0
   let currentContext = { app: 'Editor', bundleId: 'test.editor', pid: 1, windowId: 1, title: 'A', url: 'https://test/A' }
@@ -37,6 +37,7 @@ export async function createHost({ hold = false, reply, corrupt = false, writeEr
     rm: async (file, options) => { removed.push(file); for (const key of files.keys()) if (key === file || (options?.recursive && key.startsWith(`${file}/`))) files.delete(key) },
   }
   const ctx = {
+    tools: { register: (definition) => { registeredTools.set(definition.name, definition); return () => registeredTools.delete(definition.name) } },
     on: (name, fn) => {
       if (name !== 'session/event') throw new Error(`unexpected host event ${name}`)
       sessionListeners.add(fn); return () => sessionListeners.delete(fn)
@@ -45,6 +46,8 @@ export async function createHost({ hold = false, reply, corrupt = false, writeEr
     agentDefaultModel: { currentSelection: () => ({ provider: 'mock', model: 'vision' }) },
     attachments: { saveImage: async ({ name }) => ({ id: name }) },
     llm: {
+      listProviders: () => [{ id: 'mock', name: 'Mock' }],
+      listModels: async () => [{ provider: 'mock', id: 'vision', name: 'Vision', inputModalities: ['image'] }],
       resolveModelInfo: async () => modelInfo,
       stream: async function* (request) {
         const input = request.messages.findLast((message) => message.role === 'user'
@@ -65,10 +68,25 @@ export async function createHost({ hold = false, reply, corrupt = false, writeEr
             })])
           } finally { request.signal.removeEventListener('abort', aborted) }
         }
-        const result = reply === undefined ? { activities: [{ task: fixtureActivities[0]?.id ?? null,
+        const receiptMessage = request.messages.findLast((message) => message.role === 'tool')
+        const previousId = receiptMessage ? JSON.parse(receiptMessage.content[0].text).events?.[0]?.id : null
+        const result = reply === undefined ? { activities: [{ task: previousId ?? null,
           images: observations.map((item) => item.number), goal: '完成项目代码修改与验证', activity: '编写代码', summary: `第 ${requests.length} 次请求整理活动`, change: '修改并验证代码。' }] }
           : typeof reply === 'function' ? reply({ observations, fixtureActivities, requests }) : reply
         yield { type: 'text-delta', index: 0, text: typeof result === 'string' ? result : JSON.stringify(result) }
+        // 旧测试的数据只用于构造模型工具调用，生产代码不从聊天 JSON 推导写入。
+        if (toolScript === undefined) {
+          let argumentsText
+          try {
+            const parsed = typeof result === 'string' ? JSON.parse(result) : result
+            argumentsText = JSON.stringify({ changes: parsed.activities.map((item) => {
+              const { task, mergeTasks, ...fields } = item
+              return { ...fields, action: task ? (mergeTasks?.length ? 'merge' : 'update') : 'create',
+                ...(task ? { id: task } : {}), ...(mergeTasks?.length ? { mergeIds: mergeTasks } : {}) }
+            }) })
+          } catch { argumentsText = typeof result === 'string' ? result : JSON.stringify(result) }
+          yield { type: 'block-end', index: 1, block: { type: 'tool-call', id: 'fixture-write', name: 'screen_trail_write_events', arguments: argumentsText } }
+        }
         if (usage) yield { type: 'usage', usage }
         if (finishReason) yield { type: 'finish', reason: finishReason }
       },
@@ -83,7 +101,7 @@ export async function createHost({ hold = false, reply, corrupt = false, writeEr
       session.events.push(event); for (const fn of sessionListeners) fn(session, event); return event
     }
     session.append = append
-    const agent = { id: session.id, session, status: 'idle', options,
+    const agent = { id: session.id, session, status: 'idle', options, toolRestriction: null, toolGuard: null,
       model: { select: (selection) => { selected = { ...selection }; append('model/selection', selection) } },
       ctx: {
         // 与真实预设隔离组一致：普通上下文查找看不到内部 compaction。
@@ -94,6 +112,8 @@ export async function createHost({ hold = false, reply, corrupt = false, writeEr
         },
         systemPrompt: { section: (section) => { const previous = system; system = section.text; return () => { system = previous } } },
         tools: {
+          register: (definition) => { registeredTools.set(definition.name, definition); return () => registeredTools.delete(definition.name) },
+          setExecutor: (executor) => { agent.executor = executor; return () => { agent.executor = null } },
           restrict: (filter) => { agent.toolRestriction = filter; return () => { agent.toolRestriction = null } },
           guard: (fn) => { agent.toolGuard = fn; return () => { agent.toolGuard = null } },
         },
@@ -105,7 +125,7 @@ export async function createHost({ hold = false, reply, corrupt = false, writeEr
           const turn = session.events.filter((event) => event.type === 'turn/start').length + 1
           append('turn/start', { turn }); emit('agent/inbox/claimed', { message, turn })
           append('user/message', message)
-          const chunks = []; let raw = ''
+          const chunks = []; const calls = []; let raw = ''
           let reason = { kind: 'completed' }
           const revision = ++streamRevision; const attemptId = `attempt-${session.id}-${turn}-${revision}`
           let streamIndex = 0; let settlement
@@ -119,9 +139,24 @@ export async function createHost({ hold = false, reply, corrupt = false, writeEr
             emit('agent/assistant-stream', { frame: { type: 'start', attemptId, revision, turn, step: 1 } })
             for await (const chunk of ctx.llm.stream({ ...selected, system, messages, maxTokens: options.maxTokens, sessionId: session.id, signal: controller.signal })) {
               chunks.push(chunk); if (chunk.type === 'text-delta') raw += chunk.text
+              if (chunk.type === 'block-end' && chunk.block.type === 'tool-call') calls.push(chunk.block)
               emit('agent/assistant-stream', { frame: { type: 'chunk', attemptId, revision, index: streamIndex++, time: now, chunk } })
             }
             settlement = append('assistant/message', { role: 'assistant', content: [{ type: 'text', text: raw }], chunks })
+            const call = async (name, args, callOptions = {}) => {
+              if (['find_events', 'write_events'].includes(name)) name = `screen_trail_${name}`
+              const denied = agent.toolGuard?.({ name })
+              if (denied) throw new Error(denied)
+              const definition = registeredTools.get(name)
+              if (!definition) throw new Error(`unknown tool: ${name}`)
+              const value = await definition.execute(args, { agent, callId: callOptions.callId ?? `call-${++toolCallId}`, signal: controller.signal, concludeTurn: () => { agent.concluded = true } })
+              append('tool/result', { role: 'tool', content: [{ type: 'text', text: JSON.stringify(value) }] })
+              return value
+            }
+            if (finishReason?.kind === 'stop' || finishReason?.kind === 'tool-calls') {
+              if (typeof toolScript === 'function') await toolScript({ call, agent, requests })
+              else if (toolScript !== false) for (const item of calls) await call(item.name, JSON.parse(item.arguments))
+            }
           } catch (error) {
             settlement = append('assistant/attempt', { message: String(error.message || error), chunks })
             reason = { kind: 'failed' }; emit('agent/error', { error, turn })
@@ -136,7 +171,7 @@ export async function createHost({ hold = false, reply, corrupt = false, writeEr
       cancel: () => controller?.abort(new Error('native agent cancelled')),
     }
     session.messages = () => {
-      const events = session.events.filter((event) => ['user/message', 'assistant/message'].includes(event.type)
+      const events = session.events.filter((event) => ['user/message', 'assistant/message', 'tool/result'].includes(event.type)
         && (session.compactThrough === undefined || event.seq > session.compactThrough))
       return [...(session.compactedSummary ? [session.compactedSummary] : []), ...events.map((event) => event.data)]
     }
@@ -166,6 +201,10 @@ export async function createHost({ hold = false, reply, corrupt = false, writeEr
     contextPressure: (session) => session.contextWindow === undefined ? {} : { contextWindow: session.contextWindow },
   }
   ctx.workingDirectory = { defaultDirectory: '/workspace' }
+  ctx.loader = { import: async (name) => {
+    if (name !== '@deepseek-ai/dsh-tool-executor-native') throw new Error(`unexpected module: ${name}`)
+    return { NativeToolExecutor: class {} }
+  } }
   ctx.workspaceRegistry = { create: async (directory, title) => {
     if (workspaceError) throw new Error(workspaceError)
     if (!workspaces.has(directory)) {
@@ -197,6 +236,7 @@ export async function createHost({ hold = false, reply, corrupt = false, writeEr
   } }
   ctx.sessionTitle = { rename: (session, title) => { session.title = title; session.append('session/title', { title }) } }
   ctx.agents = {
+    turnBoundaryOf: (session) => ({ lastTurn: (session.events || []).filter((event) => event.type === 'turn/start').length, lastStepStartSeq: 0 }),
     get: (id) => liveAgents.get(id),
     create: async (options) => {
       if (options.signal?.aborted) throw options.signal.reason
@@ -245,6 +285,7 @@ export async function createHost({ hold = false, reply, corrupt = false, writeEr
   })
   await trail.ready
   return { trail, ctx, files, removed, requests, logs, commands, release, source, settle, conversations, workspaces, createdSessions, resumedSessions, flushedSessions, presetDefinitions, mountedPresets,
+    invokeTool: (name, args, exec = {}) => registeredTools.get(name).execute(args, { signal: new AbortController().signal, callId: `external-${++toolCallId}`, concludeTurn: () => { throw new Error('ordinary chat must not be concluded') }, ...exec }),
     state: () => trail.state(),
     setScreen: (value, context = currentContext) => { screenValue = value; currentContext = { ...context } },
     frame: async (value = screenValue, { context = currentContext, elapsed = 500 } = {}) => {

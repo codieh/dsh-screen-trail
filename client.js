@@ -30,6 +30,15 @@ window.__ModuleLoader__.load({
       idle: 'Not recording',
       working: 'Analysing',
       sampling: 'Sampling interval',
+      analysisModel: 'Analysis model',
+      effort: 'Reasoning effort',
+      hostModel: 'Follow host model',
+      defaultEffort: 'Model default',
+      saveModel: 'Save model settings',
+      refreshModels: 'Refresh models',
+      loadingModels: 'Loading model information…',
+      unsupportedEffort: 'Unsupported by this model',
+      saveModelFailed: 'Model settings were not saved. Check the error and retry.',
       activities: 'Activities',
       evidence: 'Screenshots',
       observations: 'Capture evidence',
@@ -117,6 +126,15 @@ window.__ModuleLoader__.load({
       idle: '未记录',
       working: '分析中',
       sampling: '采样间隔',
+      analysisModel: '分析模型',
+      effort: '思考强度',
+      hostModel: '跟随宿主模型',
+      defaultEffort: '模型默认',
+      saveModel: '保存模型设置',
+      refreshModels: '刷新模型',
+      loadingModels: '正在读取模型信息…',
+      unsupportedEffort: '此模型不支持该档位',
+      saveModelFailed: '模型设置未保存，请检查错误后重试。',
       activities: '活动',
       evidence: '截图依据',
       observations: '采集证据',
@@ -359,11 +377,84 @@ window.__ModuleLoader__.load({
       }
     }
 
-    /**
-     * The panel page: header controls plus the digest timeline.
-     * @param props - framework locale seat.
-     * @returns the rendered page.
-     */
+    /** 模型配置独立于采集轮询，未保存的选择不被定时刷新覆盖。 */
+    function ModelSettings({ state, pending, act, t }) {
+      const prefs = state.modelSettings || { provider: '', model: '', reasoningEffort: null }
+      const savedKey = JSON.stringify(prefs)
+      const [catalog, setCatalog] = React.useState([])
+      const [modelKey, setModelKey] = React.useState(prefs.provider && prefs.model ? JSON.stringify([prefs.provider, prefs.model]) : '')
+      const [effort, setEffort] = React.useState(prefs.reasoningEffort || '')
+      const [info, setInfo] = React.useState(null)
+      const [catalogError, setCatalogError] = React.useState(null)
+      const [error, setError] = React.useState(null)
+      const [refresh, setRefresh] = React.useState(0)
+      const [loading, setLoading] = React.useState(true)
+      const hostKey = modelKey ? '' : JSON.stringify([state.hostModel?.provider, state.hostModel?.model])
+      React.useEffect(() => {
+        setModelKey(prefs.provider && prefs.model ? JSON.stringify([prefs.provider, prefs.model]) : '')
+        setEffort(prefs.reasoningEffort || '')
+      }, [savedKey])
+      React.useEffect(() => {
+        const controller = new AbortController()
+        setCatalogError(null)
+        void (async () => {
+          try {
+            const response = await fetch(api('models'), { signal: controller.signal, cache: 'no-store' })
+            const value = await response.json()
+            if (!response.ok || !value.ok) throw new Error(value.error || `HTTP ${response.status}`)
+            if (!controller.signal.aborted) setCatalog(value.models)
+          } catch (cause) { if (!controller.signal.aborted) setCatalogError(String(cause.message || cause)) }
+        })()
+        return () => controller.abort()
+      }, [refresh])
+      React.useEffect(() => {
+        const controller = new AbortController()
+        setLoading(true); setInfo(null); setError(null)
+        void (async () => {
+          try {
+            const [provider, model] = modelKey ? JSON.parse(modelKey) : ['', '']
+            const query = new URLSearchParams({ provider, model })
+            const response = await fetch(`${api('model-info')}?${query}`, { signal: controller.signal, cache: 'no-store' })
+            const value = await response.json()
+            if (!response.ok || !value.ok) throw new Error(value.error || `HTTP ${response.status}`)
+            if (!controller.signal.aborted) setInfo(value)
+          } catch (cause) { if (!controller.signal.aborted) setError(String(cause.message || cause)) }
+          finally { if (!controller.signal.aborted) setLoading(false) }
+        })()
+        return () => controller.abort()
+      }, [modelKey, hostKey, refresh])
+      const efforts = info?.efforts || []
+      const supported = !effort || !info || efforts.some((item) => item.id === effort)
+      const models = [...catalog]
+      if (modelKey && !models.some((item) => JSON.stringify([item.provider, item.model]) === modelKey)) {
+        const [provider, model] = JSON.parse(modelKey)
+        models.push({ provider, model, name: model, providerName: provider })
+      }
+      return h('div', { className: 'st-headrow', style: { paddingTop: '10px' } },
+        h('label', { className: 'st-interval' }, t('analysisModel'),
+          h('select', { className: 'st-select', style: { maxWidth: 'min(360px, 65vw)' }, value: modelKey, disabled: pending,
+            'aria-label': t('analysisModel'), onChange: (event) => setModelKey(event.target.value) },
+          h('option', { value: '' }, `${t('hostModel')}${!modelKey && info ? ` (${info.name})` : ''}`),
+          models.map((item) => h('option', { key: JSON.stringify([item.provider, item.model]), value: JSON.stringify([item.provider, item.model]) }, `${item.providerName} / ${item.name}`)))),
+        h('label', { className: 'st-interval' }, t('effort'),
+          h('select', { className: 'st-select', value: effort, disabled: pending || loading, 'aria-label': t('effort'),
+            onChange: (event) => setEffort(event.target.value) },
+          h('option', { value: '' }, `${t('defaultEffort')}${info?.defaultEffort ? ` (${info.defaultEffort})` : ''}`),
+          effort && !efforts.some((item) => item.id === effort) && h('option', { value: effort, disabled: true }, info ? `${effort} (${t('unsupportedEffort')})` : effort),
+          efforts.map((item) => h('option', { key: item.id, value: item.id }, item.name || item.id)))),
+        h('button', { className: 'st-btn', type: 'button', disabled: pending || loading || !info || !supported,
+          onClick: async () => {
+            const [provider, model] = modelKey ? JSON.parse(modelKey) : ['', '']
+            const next = await act('setModelSettings', { settings: { provider, model, reasoningEffort: effort || null } })
+            setError(next ? null : t('saveModelFailed'))
+          } }, t('saveModel')),
+        h('button', { className: 'st-btn ghost', type: 'button', disabled: pending, onClick: () => { setError(null); setRefresh((value) => value + 1) } }, t('refreshModels')),
+        loading && h('span', { className: 'st-interval', role: 'status' }, t('loadingModels')),
+        catalogError && h('div', { className: 'st-error', role: 'alert' }, catalogError),
+        error && h('div', { className: 'st-error', role: 'alert' }, error),
+      )
+    }
+
     function Panel(props) {
       const t = typeof props.t === 'function' ? props.t : (key) => EN[key] ?? key
       const locale = (typeof document !== 'undefined' && document.documentElement.lang)
@@ -558,6 +649,7 @@ window.__ModuleLoader__.load({
                 onClick: () => setConfirming(true),
               }, t('clear'))),
           ),
+          state?.ready && h(ModelSettings, { state, pending, act, t }),
           state && h('div', { className: 'st-stats' },
             h('span', null, `${t('sampling')}: ${sampleIntervalSec} ${t('seconds')}`),
             h('span', null, `${t('samples')}: ${state.captures || 0}`),

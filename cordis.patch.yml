@@ -6,5 +6,6 @@
         sampleIntervalSec: 5
         analysisWindowSec: 300
         analysisMaxTokens: 16384
+        analysisReasoningEffort: low
         autoStart: false
         retention: 80

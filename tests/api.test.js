@@ -42,6 +42,74 @@ test('API rejects remote, cross-origin and malformed control requests', async (t
   assert.equal((await host.request('control', { method: 'POST', body: null })).code, 400)
 })
 
+test('model catalog and details expose host metadata without a generation request', async (t) => {
+  const host = await apiHost(t, { modelInfo: { inputModalities: ['image'], reasoning: { defaultEffort: 'low', efforts: [{ id: 'low' }, { id: 'high' }] } } })
+  host.ctx.llm.listModels = async () => [{ id: 'vision', name: 'Vision', inputModalities: ['image'] }, { id: 'text-only', name: 'Text', inputModalities: ['text'] }]
+  const models = JSON.parse((await host.request('models')).data)
+  assert.equal(models.models.length, 1)
+  assert.equal(models.models[0].model, 'vision')
+  const info = JSON.parse((await host.request('model-info', { query: '?provider=mock&model=vision' })).data)
+  assert.deepEqual(info.efforts.map((item) => item.id), ['low', 'high'])
+  assert.equal(info.defaultEffort, 'low'); assert.equal(host.requests.length, 0)
+  assert.equal((await host.request('models', { peer: '10.0.0.1' })).code, 403)
+})
+
+test('model settings are not published when persistence fails', async (t) => {
+  const host = await apiHost(t)
+  await host.trail.persist()
+  const previous = host.state().modelSettings
+  const rename = host.trail.io.rename
+  host.trail.io.rename = async (from, to) => {
+    if (to === host.trail.stateFile && JSON.parse(host.files.get(from)).modelSettings?.model === 'vision') throw new Error('settings disk failed')
+    return rename(from, to)
+  }
+  const response = await host.request('control', { method: 'POST', body: { action: 'setModelSettings',
+    settings: { provider: 'mock', model: 'vision', reasoningEffort: null } } })
+  assert.equal(response.code, 500)
+  assert.deepEqual(host.state().modelSettings, previous)
+  assert.equal(JSON.parse(host.files.get(host.trail.stateFile)).modelSettings, undefined)
+  assert.equal(host.requests.length, 0)
+})
+
+test('model settings persist across restart and validate supported reasoning', async (t) => {
+  const options = { modelInfo: { inputModalities: ['image'], reasoning: { defaultEffort: 'low', efforts: [{ id: 'low' }, { id: 'high' }] } } }
+  const host = await apiHost(t, options)
+  const prefs = { provider: 'mock', model: 'vision', reasoningEffort: 'high' }
+  const saved = await host.request('control', { method: 'POST', body: { action: 'setModelSettings', settings: prefs } })
+  assert.equal(saved.code, 200); assert.deepEqual(JSON.parse(saved.data).modelSettings, prefs)
+  const history = JSON.parse(host.files.get(host.trail.stateFile))
+  const restored = await createHost({ ...options, history, config: { analysisReasoningEffort: 'low' } }); t.after(restored.dispose)
+  assert.deepEqual(restored.state().modelSettings, prefs)
+  await host.trail.manualCapture(); await host.settle()
+  assert.equal(host.requests[0].reasoningEffort, 'high')
+  const invalid = await host.request('control', { method: 'POST', body: { action: 'setModelSettings', settings: { ...prefs, reasoningEffort: 'unsupported' } } })
+  assert.equal(invalid.code, 500); assert.deepEqual(host.state().modelSettings, prefs)
+})
+
+test('saving model preferences does not cancel or change the running analysis', async (t) => {
+  const host = await apiHost(t, { hold: true, config: { analysisReasoningEffort: 'low' },
+    modelInfo: { inputModalities: ['image'], reasoning: { efforts: [{ id: 'low' }, { id: 'high' }], defaultEffort: 'high' } } })
+  await host.trail.manualCapture(); await host.settle()
+  await host.trail.setModelSettings({ provider: 'mock', model: 'another-vision', reasoningEffort: 'high' })
+  assert.equal(host.trail.controller.signal.aborted, false)
+  assert.equal(host.requests[0].model, 'vision'); assert.equal(host.requests[0].reasoningEffort, 'low')
+  host.release(); await host.settle()
+  await host.trail.manualCapture(); await host.settle()
+  assert.equal(host.requests[1].model, 'another-vision'); assert.equal(host.requests[1].reasoningEffort, 'high')
+})
+
+test('model-default reasoning can be selected and clearing captures preserves model settings', async (t) => {
+  const host = await apiHost(t, { config: { analysisReasoningEffort: 'high' }, modelInfo: {
+    inputModalities: ['image'], reasoning: { defaultEffort: 'low', efforts: [{ id: 'low' }, { id: 'high' }] } } })
+  const prefs = { provider: '', model: '', reasoningEffort: null }
+  await host.trail.setModelSettings(prefs)
+  await host.trail.manualCapture(); await host.settle()
+  assert.equal(host.requests[0].reasoningEffort, 'low')
+  await host.trail.clear()
+  assert.deepEqual(host.state().modelSettings, prefs)
+  assert.deepEqual(JSON.parse(host.files.get(host.trail.stateFile)).modelSettings, prefs)
+})
+
 test('sampling interval control persists seconds and rejects invalid input', async (t) => {
   const host = await apiHost(t)
   const response = await host.request('control', { method: 'POST', body: { action: 'setSampleInterval', intervalSec: 15 } })

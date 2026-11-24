@@ -1,6 +1,6 @@
 import { ScreenTrail } from './trail.js'
 
-export const inject = ['llm', 'webServer', 'attachments', 'agentDefaultModel', 'timer', 'agents', 'sessions', 'sessionPersistence', 'sessionQuery', 'sessionTitle', 'workingDirectory', 'workspaceRegistry', 'agentPresets', 'tokenMeter']
+export const inject = ['llm', 'webServer', 'attachments', 'agentDefaultModel', 'timer', 'agents', 'sessions', 'sessionPersistence', 'sessionQuery', 'sessionTitle', 'workingDirectory', 'workspaceRegistry', 'agentPresets', 'tokenMeter', 'tools']
 const prefix = '/screen-trail/api'
 
 function send(response, status, value) {
@@ -94,6 +94,7 @@ export function registerRoutes(ctx, trail) {
           break
         }
         case 'setSampleInterval': await trail.setSampleInterval(Number(body.intervalSec)); break
+        case 'setModelSettings': await trail.setModelSettings(body.settings); break
         case 'openPermission': await trail.openPermission(body.permission || 'screen'); break
         default: send(response, 400, { ok: false, error: 'unknown action' }); return
       }
@@ -101,6 +102,18 @@ export function registerRoutes(ctx, trail) {
     } catch (error) {
       trail.fail(`control.${body.action}`, error)
       send(response, 500, { ok: false, error: trail.status.lastError })
+    }
+  })
+  for (const endpoint of ['models', 'model-info']) register(endpoint, async (request, response) => {
+    if (!admit(request, response)) return
+    if (!['GET', 'HEAD'].includes(request.method)) { send(response, 405, { ok: false, error: 'method not allowed' }); return }
+    try {
+      await trail.assertReady()
+      const url = new URL(request.url, 'http://localhost')
+      send(response, 200, endpoint === 'models' ? await trail.modelCatalog() : await trail.modelDetails(url.searchParams.get('provider') || '', url.searchParams.get('model') || ''))
+    } catch (error) {
+      trail.log('model_settings.read_failed', { endpoint, message: error.message })
+      send(response, 500, { ok: false, error: error.message })
     }
   })
   register('image', async (request, response) => {
