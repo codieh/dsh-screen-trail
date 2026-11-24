@@ -8,4 +8,4 @@
         analysisMaxTokens: 16384
         analysisReasoningEffort: low
         autoStart: false
-        retention: 80
+        retention: 80 # 临时观察队列上限；正式事件不按条数淘汰。

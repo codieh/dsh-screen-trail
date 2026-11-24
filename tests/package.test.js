@@ -20,7 +20,7 @@ test('npm package contains valid runtime files but no development or local data'
   } })
 
   // 注入假数据验证打包边界，不能因干净仓库恰好没有敏感文件就让检查通过。
-  for (const file of ['.DS_Store', 'state.json', 'shots/private.jpg', 'diagnostics/request.json',
+  for (const file of ['.DS_Store', 'state.json', 'journal.sqlite', 'journal.sqlite-wal', 'journal.sqlite-shm', 'shots/private.jpg', 'diagnostics/request.json',
     'native/capture-test-cache', 'native/module-cache/cached.swiftmodule']) {
     const target = path.join(fixture, file)
     await mkdir(path.dirname(target), { recursive: true })
@@ -37,7 +37,7 @@ test('npm package contains valid runtime files but no development or local data'
 
   // 除显式入口外，间接导入、宿主补丁和首次启动要编译的 Swift 源码也必须齐全。
   for (const file of ['package.json', 'index.js', 'client.js', 'trail.js', 'frames.js',
-    'capture.js', 'analysis-response.js', 'event-tools.js', 'native/capture.swift', 'cordis.patch.yml',
+    'capture.js', 'analysis-response.js', 'event-tools.js', 'storage.js', 'native/capture.swift', 'cordis.patch.yml',
     'locale/en.json', 'locale/zh.json', 'icon.svg', 'docs/DETAIL.md', 'docs/DETAIL.zh.md', 'docs/preview.svg']) {
     assert.ok(files.includes(file), `required runtime file missing from package: ${file}`)
   }
@@ -54,6 +54,7 @@ test('npm package contains valid runtime files but no development or local data'
     assert.doesNotMatch(file, /^native\/(capture-[^/]+|module-cache)(\/|$)/,
       `compiled capture cache included in package: ${file}`)
     assert.notEqual(file, 'state.json', 'local state included in package')
+    assert.doesNotMatch(file, /\.sqlite(?:-wal|-shm)?$/, 'local database included in package')
     if (file.endsWith('.js')) await exec(process.execPath, ['--check', path.join(fixture, file)])
     if (file.endsWith('.json')) JSON.parse(await readFile(path.join(fixture, file), 'utf8'))
   }

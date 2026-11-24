@@ -44,7 +44,7 @@ test('real tool results supply the ID for querying and continuing one event', as
   assert.equal(receipts[0].events[0].id, receipts[1].events[0].id)
   assert.equal(h.state().records[0].evidence.length, 2)
   assert.equal(h.state().records[0].analysis.summary, '继续完善滑动窗口。')
-  assert.match(findEvents(h.trail.activities, {}).events[0].at, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
+  assert.match(findEvents(h.trail.store, {}).events[0].at, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
   assert.ok(h.conversations.get(h.state().analysisSessionId).events.some((event) => event.type === 'tool/result'))
 })
 
@@ -135,14 +135,11 @@ test('an empty first write does not reclaim screenshots needed by a later edit',
 
 test('storage failure does not publish a partially edited journal', async (t) => {
   const h = await createHost(); t.after(h.dispose)
-  const rename = h.trail.io.rename
-  h.trail.io.rename = async (from, to) => {
-    if (to === h.trail.stateFile && JSON.parse(h.files.get(from)).activities.length) throw new Error('event disk failed')
-    return rename(from, to)
-  }
+  const putEvent = h.trail.store.putEvent.bind(h.trail.store)
+  h.trail.store.putEvent = (item) => { putEvent(item); throw new Error('event disk failed') }
   await h.trail.manualCapture(); await h.settle()
   assert.equal(h.state().records.length, 0)
-  assert.equal(JSON.parse(h.files.get(h.trail.stateFile)).activities.length, 0)
+  assert.equal(h.trail.store.eventCount(), 0)
   assert.ok(h.state().observations.length)
   assert.ok(h.logs.some((line) => line.includes('event disk failed')))
 })
@@ -176,26 +173,21 @@ test('covers are attached only when explicitly requested from the event query', 
 })
 
 test('a user deletion racing a commit cannot resurrect the event or delete an unrelated one', async (t) => {
+  let release; let entered = false
+  const gate = new Promise((resolve) => { release = resolve })
   const h = await createHost({ toolScript: async ({ call, requests }) => {
     if (requests.length === 1) await call('write_events', { changes: [create('目标'), create('无关记录')] })
     else {
       const found = await call('find_events', { query: '目标' })
+      entered = true; await gate
       await call('write_events', { changes: [{ action: 'update', id: found.events[0].id, summary: '修改目标。', images: [1] }] })
     }
   } }); t.after(h.dispose)
   await h.trail.manualCapture(); await h.settle()
   const id = h.state().records.find((item) => item.analysis.activity === '目标').id
-  const rename = h.trail.io.rename; let release; let entered = false
-  const gate = new Promise((resolve) => { release = resolve })
-  h.trail.io.rename = async (...args) => {
-    if (args[1] === h.trail.stateFile && !entered && JSON.parse(h.files.get(args[0])).activities.some((item) => item.analysis.summary === '修改目标。')) {
-      entered = true; await gate
-    }
-    return rename(...args)
-  }
   h.setScreen(255); await h.trail.manualCapture(); await h.settle(); assert.equal(entered, true)
   const removed = h.trail.remove(id)
   release(); await removed; await h.settle()
   assert.deepEqual(h.state().records.map((item) => item.analysis.activity), ['无关记录'])
-  assert.deepEqual(JSON.parse(h.files.get(h.trail.stateFile)).activities.map((item) => item.analysis.activity), ['无关记录'])
+  assert.deepEqual(h.snapshot().activities.map((item) => item.analysis.activity), ['无关记录'])
 })

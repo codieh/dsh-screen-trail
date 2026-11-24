@@ -39,7 +39,7 @@ test('restart reuses the native group and preserves a user-renamed group title',
   workspace.title = '我的屏幕记录'
   await first.dispose()
   const h = await createHost({ conversations: first.conversations, workspaces: first.workspaces,
-    history: JSON.parse(first.files.get(`${root}/state.json`)), startAt: 1700000000000 + 1000 }); t.after(h.dispose)
+    history: first.snapshot(), startAt: 1700000000000 + 1000 }); t.after(h.dispose)
   await h.trail.manualCapture(); await h.settle()
   assert.equal(h.workspaces.size, 1); assert.equal(h.workspaces.get(root).id, workspace.id)
   assert.equal(h.workspaces.get(root).title, '我的屏幕记录')
@@ -84,7 +84,7 @@ test('an associated ungrouped session is preserved while subsequent analysis ope
   assert.deepEqual(h.workspaces.get(root).sessionIds, [id])
   assert.equal(h.requests[0].messages.length, 1)
   assert.ok(!h.requests[0].messages[0].content[0].text.includes('旧观察记录。'))
-  assert.equal(JSON.parse(h.files.get(`${root}/state.json`)).analysisSessionId, id)
+  assert.equal(h.trail.store.setting('analysisSessionId'), id)
   assert.ok(h.logs.some((line) => line.includes('session.group_rollover')))
 })
 

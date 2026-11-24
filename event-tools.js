@@ -57,8 +57,8 @@ export function registerEventTools(trail) {
       includeEvidence: { type: 'boolean', description: 'Include stored evidence IDs and times, usable by screen_trail_write_events.evidenceIds.' },
       limit: { type: 'integer', minimum: 1, maximum: 80 } }, additionalProperties: false,
   }, async (args, exec, context) => {
-    const result = findEvents(trail.activities, args)
-    if (args.includeEvidence) for (const item of result.events) item.evidence = trail.activities.find((entry) => entry.id === item.id).evidence
+    const result = findEvents(trail.store, args)
+    if (args.includeEvidence) for (const item of result.events) item.evidence = trail.store.getEvent(item.id).evidence
       .map((frame) => ({ id: frame.id, at: readableDate(frame.at), lastSeenAt: readableDate(frame.lastSeenAt ?? frame.at) }))
     // 默认不重复发送历史图片；明确需要证据时仅附返回事件的封面。
     if (args.includeCover === true) for (const item of result.events) {
@@ -98,7 +98,7 @@ function date(value) {
   if (!Number.isFinite(result) || readableDate(result) !== value) fail('invalid date')
   return result
 }
-export function findEvents(activities, args = {}) {
+export function findEvents(store, args = {}) {
   if (args.ids !== undefined && (!Array.isArray(args.ids) || args.ids.some((id) => typeof id !== 'string'))) fail('ids must be strings')
   if (args.query !== undefined && typeof args.query !== 'string') fail('query must be a string')
   const limit = args.limit ?? 10
@@ -106,12 +106,8 @@ export function findEvents(activities, args = {}) {
   const from = date(args.from); const to = date(args.to)
   if (from !== undefined && to !== undefined && from > to) fail('from is later than to')
   const terms = (args.query || '').toLowerCase().split(/\s+/).filter(Boolean)
-  const matches = activities.filter((item) => (!args.ids || args.ids.includes(item.id))
-    && (from === undefined || item.lastSeenAt >= from) && (to === undefined || item.at <= to)
-    && terms.every((term) => `${item.analysis.activity} ${item.analysis.summary}`.toLowerCase().includes(term)))
-    .sort((a, b) => b.lastSeenAt - a.lastSeenAt)
-  return { total: matches.length, events: matches.slice(0, limit).map((item) => ({ id: item.id, activity: item.analysis.activity,
-    summary: item.analysis.summary, at: readableDate(item.at), lastSeenAt: readableDate(item.lastSeenAt), evidenceCount: item.evidence.length })) }
+  const result = store.find({ ids: args.ids, terms, from, to, limit })
+  return { ...result, events: result.events.map((item) => ({ ...item, at: readableDate(item.at), lastSeenAt: readableDate(item.lastSeenAt) })) }
 }
 function readableDate(value) { return new Date(value + 8 * 60 * 60 * 1000).toISOString().slice(0, 19).replace('T', ' ') }
 
@@ -120,7 +116,10 @@ export function prepareEventChanges(trail, args, selected, model) {
   if (!Array.isArray(args?.changes)) fail('changes must be an array')
   const currentImageCount = selected.length
   selected = [...selected]
-  const draft = { activities: structuredClone(trail.activities), status: { ignored: 0 }, uuid: trail.uuid, log: () => {} }
+  // 只读取此次编辑涉及的事件，数据库增长不意味着每次复制全部历史。
+  const ids = new Set(args.changes.flatMap((item) => [item?.id, ...(Array.isArray(item?.mergeIds) ? item.mergeIds : [])]).filter((id) => typeof id === 'string'))
+  const saved = [...ids].map((id) => trail.store.getEvent(id)).filter(Boolean)
+  const draft = { activities: structuredClone(saved), status: { ignored: 0 }, uuid: trail.uuid, log: () => {} }
   const byId = new Map(draft.activities.map((item) => [item.id, item]))
   const touched = new Set(); const deletedIds = []; const updates = []
   for (const item of args.changes) {
@@ -145,7 +144,7 @@ export function prepareEventChanges(trail, args, selected, model) {
     for (const id of item.evidenceIds || []) {
       let index = selected.findIndex((frame) => frame.id === id)
       if (index < 0) {
-        const frame = trail.records.find((entry) => entry.id === id) || trail.activities.flatMap((entry) => entry.evidence).find((entry) => entry.id === id)
+        const frame = trail.records.find((entry) => entry.id === id) || trail.store.getObservation(id)
         if (!frame) fail(`evidence not found: ${id}`, 'EVIDENCE_NOT_FOUND')
         selected.push(frame); index = selected.length - 1
       }
@@ -153,14 +152,9 @@ export function prepareEventChanges(trail, args, selected, model) {
     }
     updates.push({ ...(existing?.analysis || {}), ...item, task: existing?.id ?? null, images, mergeTasks: mergeIds })
   }
-  const result = trail.readActivities({ activities: updates }, selected, trail.activities, model)
+  const result = trail.readActivities({ activities: updates }, selected, saved, model)
   draft.activities = draft.activities.filter((item) => !deletedIds.includes(item.id))
   const receipts = trail.applyActivities.call(draft, result, selected)
-  const protectedIds = new Set(receipts.map((item) => item.id))
-  while (draft.activities.length > trail.settings.retention) {
-    const index = draft.activities.findLastIndex((item) => !protectedIds.has(item.id))
-    if (index < 0) fail('changed events exceed journal retention capacity', 'EVENT_CAPACITY')
-    draft.activities.splice(index, 1)
-  }
-  return { activities: draft.activities, result, receipt: { events: receipts, deletedIds, ignoredImages: result.ignoredObservationIds.length } }
+  return { activities: draft.activities, deletedIds: [...deletedIds, ...receipts.flatMap((item) => item.mergedIds)],
+    result, receipt: { events: receipts, deletedIds, ignoredImages: result.ignoredObservationIds.length } }
 }

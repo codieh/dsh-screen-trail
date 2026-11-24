@@ -48,7 +48,7 @@ test('analysis is a real native conversation turn, not a second mirrored model r
   assert.equal(JSON.parse(messages(session)[1].data.content[0].text).activities.length, 1)
   assert.equal(h.requests.length, 1); assert.equal(h.requests[0].sessionId, id)
   assert.equal(h.state().lastAnalysis.sessionId, id); assert.ok(h.flushedSessions.includes(id))
-  assert.equal(JSON.parse(h.files.get(`${root}/state.json`)).analysisSessionId, id)
+  assert.equal(h.trail.store.setting('analysisSessionId'), id)
 })
 
 test('successive analyses append to one session and keep native message history', async (t) => {
@@ -95,7 +95,7 @@ test('restart restores the associated conversation instead of creating another o
   const first = await createHost()
   await first.trail.manualCapture(); await first.settle()
   const id = first.state().analysisSessionId; await first.dispose()
-  const h = await createHost({ history: JSON.parse(first.files.get(`${root}/state.json`)), conversations: first.conversations, startAt: 1700000000000 + hour }); t.after(h.dispose)
+  const h = await createHost({ history: first.snapshot(), conversations: first.conversations, startAt: 1700000000000 + hour }); t.after(h.dispose)
   await h.trail.manualCapture(); await h.settle()
   assert.equal(h.state().analysisSessionId, id); assert.equal(h.createdSessions.length, 0)
   assert.deepEqual(h.resumedSessions, [id]); assert.equal(messages(h.conversations.get(id)).length, 4)
@@ -104,7 +104,7 @@ test('restart restores the associated conversation instead of creating another o
 test('restart after eight hours creates a new session without resuming or deleting the old one', async (t) => {
   const first = await createHost()
   await first.trail.manualCapture(); await first.settle(); const id = first.state().analysisSessionId; await first.dispose()
-  const h = await createHost({ history: JSON.parse(first.files.get(`${root}/state.json`)), conversations: first.conversations, startAt: 1700000000000 + 8 * hour }); t.after(h.dispose)
+  const h = await createHost({ history: first.snapshot(), conversations: first.conversations, startAt: 1700000000000 + 8 * hour }); t.after(h.dispose)
   await h.trail.manualCapture(); await h.settle()
   assert.notEqual(h.state().analysisSessionId, id); assert.equal(h.createdSessions.length, 1)
   assert.equal(h.resumedSessions.length, 0); assert.equal(h.conversations.has(id), true)

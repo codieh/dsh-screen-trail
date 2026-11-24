@@ -42,6 +42,20 @@ test('API rejects remote, cross-origin and malformed control requests', async (t
   assert.equal((await host.request('control', { method: 'POST', body: null })).code, 400)
 })
 
+test('state contains no event history and the date endpoint validates dates and pages', async (t) => {
+  const host = await apiHost(t)
+  await host.trail.manualCapture(); await host.settle()
+  const state = JSON.parse((await host.request('state')).data)
+  assert.equal('records' in state, false); assert.equal(state.activityCount, 1); assert.ok(state.eventsRevision > 0)
+  const day = JSON.parse((await host.request('events', { query: '?date=2023-11-15&limit=1' })).data)
+  assert.equal(day.records.length, 1); assert.equal(day.nextCursor, null)
+  assert.equal(JSON.parse((await host.request('events', { query: '?date=2023-11-16' })).data).total, 0)
+  for (const query of ['', '?date=2026-02-30', '?date=2023-11-15&limit=0', '?date=2023-11-15&cursor=bad']) {
+    assert.equal((await host.request('events', { query })).code, 400, query)
+  }
+  assert.equal((await host.request('events', { peer: '10.0.0.1', query: '?date=2023-11-15' })).code, 403)
+})
+
 test('model catalog and details expose host metadata without a generation request', async (t) => {
   const host = await apiHost(t, { modelInfo: { inputModalities: ['image'], reasoning: { defaultEffort: 'low', efforts: [{ id: 'low' }, { id: 'high' }] } } })
   host.ctx.llm.listModels = async () => [{ id: 'vision', name: 'Vision', inputModalities: ['image'] }, { id: 'text-only', name: 'Text', inputModalities: ['text'] }]
@@ -58,16 +72,13 @@ test('model settings are not published when persistence fails', async (t) => {
   const host = await apiHost(t)
   await host.trail.persist()
   const previous = host.state().modelSettings
-  const rename = host.trail.io.rename
-  host.trail.io.rename = async (from, to) => {
-    if (to === host.trail.stateFile && JSON.parse(host.files.get(from)).modelSettings?.model === 'vision') throw new Error('settings disk failed')
-    return rename(from, to)
-  }
+  const set = host.trail.store.setSetting.bind(host.trail.store)
+  host.trail.store.setSetting = (key, value) => { set(key, value); if (key === 'modelSettings') throw new Error('settings disk failed') }
   const response = await host.request('control', { method: 'POST', body: { action: 'setModelSettings',
     settings: { provider: 'mock', model: 'vision', reasoningEffort: null } } })
   assert.equal(response.code, 500)
   assert.deepEqual(host.state().modelSettings, previous)
-  assert.equal(JSON.parse(host.files.get(host.trail.stateFile)).modelSettings, undefined)
+  assert.equal(host.trail.store.setting('modelSettings'), undefined)
   assert.equal(host.requests.length, 0)
 })
 
@@ -77,7 +88,7 @@ test('model settings persist across restart and validate supported reasoning', a
   const prefs = { provider: 'mock', model: 'vision', reasoningEffort: 'high' }
   const saved = await host.request('control', { method: 'POST', body: { action: 'setModelSettings', settings: prefs } })
   assert.equal(saved.code, 200); assert.deepEqual(JSON.parse(saved.data).modelSettings, prefs)
-  const history = JSON.parse(host.files.get(host.trail.stateFile))
+  const history = host.snapshot()
   const restored = await createHost({ ...options, history, config: { analysisReasoningEffort: 'low' } }); t.after(restored.dispose)
   assert.deepEqual(restored.state().modelSettings, prefs)
   await host.trail.manualCapture(); await host.settle()
@@ -107,7 +118,7 @@ test('model-default reasoning can be selected and clearing captures preserves mo
   assert.equal(host.requests[0].reasoningEffort, 'low')
   await host.trail.clear()
   assert.deepEqual(host.state().modelSettings, prefs)
-  assert.deepEqual(JSON.parse(host.files.get(host.trail.stateFile)).modelSettings, prefs)
+  assert.deepEqual(host.trail.store.setting('modelSettings'), prefs)
 })
 
 test('sampling interval control persists seconds and rejects invalid input', async (t) => {
@@ -115,13 +126,21 @@ test('sampling interval control persists seconds and rejects invalid input', asy
   const response = await host.request('control', { method: 'POST', body: { action: 'setSampleInterval', intervalSec: 15 } })
   assert.equal(response.code, 200)
   assert.equal(JSON.parse(response.data).sampleIntervalSec, 15)
-  const history = JSON.parse(host.files.get(host.trail.stateFile))
+  const history = host.snapshot()
   assert.equal(history.sampleIntervalSec, 15)
   const restored = await createHost({ history }); t.after(restored.dispose)
   assert.equal(restored.state().sampleIntervalSec, 15)
   const invalid = await host.request('control', { method: 'POST', body: { action: 'setSampleInterval', intervalSec: 0 } })
   assert.equal(invalid.code, 500)
   assert.equal(host.state().sampleIntervalSec, 15)
+})
+
+test('analysis window settings persist in SQLite independently of sampling', async (t) => {
+  const host = await apiHost(t)
+  const response = await host.request('control', { method: 'POST', body: { action: 'setInterval', intervalSec: 120 } })
+  assert.equal(response.code, 200); assert.equal(host.trail.store.setting('analysisWindowSec'), 120)
+  const restored = await createHost({ history: host.snapshot() }); t.after(restored.dispose)
+  assert.equal(restored.state().analysisWindowSec, 120); assert.equal(restored.state().sampleIntervalSec, 5)
 })
 
 test('changing sampling interval does not cancel in-flight analysis', async (t) => {

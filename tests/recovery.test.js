@@ -107,7 +107,7 @@ test('clear removes diagnostics, raw samples and cache and prevents late metadat
   assert.equal(host.state().records.length, 0)
   assert.equal(host.state().lastAnalysis, null)
   assert.equal(host.state().modelCalls, 0)
-  assert.equal('contents' in JSON.parse(host.files.get(`${root}/state.json`)), false)
+  assert.equal('contents' in host.snapshot(), false)
   assert.equal([...host.files.keys()].filter((file) => file.startsWith(`${root}/diagnostics/`)).length, 0)
   assert.equal([...host.files.keys()].filter((file) => file.startsWith('/virtual-temp/samples/')).length, 0)
   releaseMetadata({ inputModalities: ['image'] }); await host.settle()

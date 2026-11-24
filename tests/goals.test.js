@@ -112,7 +112,7 @@ test('later evidence consolidates previously split phases while preserving an un
   assert.equal(record.analysis.goal, goal); assert.equal(record.at, 1699999950000)
   assert.equal(record.evidence.length, 4); assert.ok(h.state().records.some((item) => item.id === 'activity-other'))
   for (const frame of record.evidence) assert.ok((await h.trail.image(frame.id)).length)
-  const stored = JSON.parse(h.files.get(`${root}/state.json`))
+  const stored = h.snapshot()
   assert.equal(stored.activities.length, 2)
   assert.ok(h.logs.some((line) => line.includes('"action":"merged"')))
   const diagnostic = JSON.parse(h.files.get(h.state().lastAnalysis.diagnosticFile))

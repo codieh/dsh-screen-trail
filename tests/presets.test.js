@@ -29,7 +29,7 @@ test('a fresh analysis mounts the host default preset before publishing and subm
 test('restart mounts the saved preset, not a newly selected host default', async (t) => {
   const first = await createHost()
   await first.trail.manualCapture(); await first.settle(); await first.dispose()
-  const h = await createHost({ history: JSON.parse(first.files.get(`${root}/state.json`)), conversations: first.conversations,
+  const h = await createHost({ history: first.snapshot(), conversations: first.conversations,
     defaultPreset: 'minimal', presetDefinitions: new Map([['standard', definition()], ['minimal', definition()]]) }); t.after(h.dispose)
   await h.trail.manualCapture(); await h.settle()
   assert.deepEqual(h.mountedPresets, ['standard'])
@@ -67,7 +67,7 @@ test('a legacy session without a preset stays intact while new analysis uses a p
 test('a missing saved preset fails without silently using the default or replacing history', async (t) => {
   const first = await createHost()
   await first.trail.manualCapture(); await first.settle(); await first.dispose()
-  const h = await createHost({ history: JSON.parse(first.files.get(`${root}/state.json`)), conversations: first.conversations,
+  const h = await createHost({ history: first.snapshot(), conversations: first.conversations,
     defaultPreset: 'minimal', presetDefinitions: new Map([['minimal', definition()]]) }); t.after(h.dispose)
   await h.trail.manualCapture(); await h.settle()
   assert.match(h.state().lastError, /agent preset not found: standard/)

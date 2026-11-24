@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { ScreenTrail } from '../trail.js'
+import { JournalStore } from '../storage.js'
 
 export const root = '/virtual-home/.dsh/screen-trail'
 export const settle = async () => { for (let i = 0; i < 32; i += 1) await new Promise(setImmediate) }
@@ -10,7 +11,7 @@ export function makeFrame(value, context, at) {
 }
 
 /** 所有屏幕帧、时钟、磁盘和模型都注入，回归测试不会读取真实桌面或调用云端。 */
-export async function createHost({ hold = false, reply, toolScript, corrupt = false, writeError = false, history, captureError, captureGate, conversations = new Map(), workspaces = new Map(), workspaceError, startAt = 1700000000000,
+export async function createHost({ hold = false, reply, toolScript, corrupt = false, writeError = false, history, legacyHistory, captureError, captureGate, conversations = new Map(), workspaces = new Map(), workspaceError, startAt = 1700000000000,
   finishReason = { kind: 'stop' }, usage = { inputTokens: 100, outputTokens: 200 }, modelInfo = { inputModalities: ['image'] }, defaultPreset = 'standard',
   presetDefinitions = new Map([['standard', { compaction: { config: { auto: true }, compactIfNeeded: () => { throw new Error('compaction belongs to the host loop') } } }]]), config = {} } = {}) {
   const files = new Map(); const removed = []; const requests = []; const logs = []; const commands = []; const timers = new Map()
@@ -19,20 +20,22 @@ export async function createHost({ hold = false, reply, toolScript, corrupt = fa
   const presetBindings = new WeakMap(); const mountedPresets = []
   let now = startAt; let seq = conversations.size * 10000; let timerSeq = 0; let screenValue = 0
   let currentContext = { app: 'Editor', bundleId: 'test.editor', pid: 1, windowId: 1, title: 'A', url: 'https://test/A' }
-  let source; let release
+  let source; let release; let closedSnapshot
   const gate = new Promise((resolve) => { release = resolve })
   if (corrupt) files.set(`${root}/state.json`, '{broken json')
-  if (history) {
-    files.set(`${root}/state.json`, JSON.stringify(history))
-    for (const item of [...history.records, ...(history.activities || []).flatMap((activity) => activity.evidence)]) files.set(`${root}/shots/${item.imageId || item.id}.jpg`, Buffer.from('legacy jpeg'))
+  const seed = legacyHistory || history
+  if (legacyHistory) files.set(`${root}/state.json`, JSON.stringify(legacyHistory))
+  if (seed) {
+    for (const item of [...seed.records, ...(seed.activities || []).flatMap((activity) => activity.evidence)]) files.set(`${root}/shots/${item.imageId || item.id}.jpg`, Buffer.from('legacy jpeg'))
   }
   const missing = (file) => Object.assign(new Error(`missing ${file}`), { code: 'ENOENT' })
   const io = {
     mkdir: async () => {},
+    chmod: async () => {},
     readFile: async (file) => { if (!files.has(file)) throw missing(file); return files.get(file) },
     access: async (file) => { if (!files.has(file)) throw missing(file) },
     readdir: async (directory) => [...files.keys()].filter((file) => file.startsWith(`${directory}/`)).map((file) => file.slice(directory.length + 1)).filter((name) => !name.includes('/')),
-    writeFile: async (file, body) => { if (writeError) throw new Error('disk write failed'); files.set(file, body) },
+    writeFile: async (file, body) => { if (writeError && !file.endsWith('journal.sqlite')) throw new Error('disk write failed'); files.set(file, body) },
     rename: async (from, to) => { files.set(to, files.get(from)); files.delete(from) },
     rm: async (file, options) => { removed.push(file); for (const key of files.keys()) if (key === file || (options?.recursive && key.startsWith(`${file}/`))) files.delete(key) },
   }
@@ -260,6 +263,25 @@ export async function createHost({ hold = false, reply, toolScript, corrupt = fa
     },
   }
   const trail = new ScreenTrail(ctx, config, { fs: io, home: '/virtual-home', now: () => now,
+    createStore: (_file, options) => {
+      // 使用真正的内存 SQLite，不伪造事务与外键；history 表示已保存的新库测试数据。
+      const store = new JournalStore(':memory:', options)
+      if (history) store.save({ records: history.records, events: history.activities || [], settings: {
+        legacyResetPending: false, analysisSessionId: history.analysisSessionId ?? null,
+        ...(history.sampleIntervalSec !== undefined ? { sampleIntervalSec: history.sampleIntervalSec } : {}),
+        ...(history.analysisWindowSec !== undefined ? { analysisWindowSec: history.analysisWindowSec } : {}),
+        ...(history.modelSettings ? { modelSettings: history.modelSettings } : {}),
+      } })
+      const close = store.close.bind(store)
+      store.close = () => {
+        closedSnapshot = { version: 1, records: store.pool(), activities: store.allEvents(),
+          analysisSessionId: store.setting('analysisSessionId') ?? null, sampleIntervalSec: store.setting('sampleIntervalSec'),
+          analysisWindowSec: store.setting('analysisWindowSec'),
+          ...(store.setting('modelSettings') ? { modelSettings: store.setting('modelSettings') } : {}) }
+        close()
+      }
+      return store
+    },
     uuid: () => `${String(++seq).padStart(8, '0')}-0000-4000-8000-000000000000`,
     setTimer: (fn, ms) => { const id = ++timerSeq; timers.set(id, { at: now + ms, fn }); return id }, clearTimer: (id) => timers.delete(id),
     run: async (command, args) => { commands.push({ command, args }); return '' },
@@ -284,9 +306,13 @@ export async function createHost({ hold = false, reply, toolScript, corrupt = fa
     },
   })
   await trail.ready
+  if (writeError) {
+    trail.store.save = () => { throw new Error('disk write failed') }
+  }
   return { trail, ctx, files, removed, requests, logs, commands, release, source, settle, conversations, workspaces, createdSessions, resumedSessions, flushedSessions, presetDefinitions, mountedPresets,
     invokeTool: (name, args, exec = {}) => registeredTools.get(name).execute(args, { signal: new AbortController().signal, callId: `external-${++toolCallId}`, concludeTurn: () => { throw new Error('ordinary chat must not be concluded') }, ...exec }),
-    state: () => trail.state(),
+    state: () => ({ ...trail.state(), records: trail.activities }),
+    snapshot: () => closedSnapshot ?? ({ version: 1, records: trail.store.pool(), activities: trail.activities, ...trail.persistedSettings() }),
     setScreen: (value, context = currentContext) => { screenValue = value; currentContext = { ...context } },
     frame: async (value = screenValue, { context = currentContext, elapsed = 500 } = {}) => {
       now += elapsed; screenValue = value; currentContext = { ...context }; source.emit(); await settle()

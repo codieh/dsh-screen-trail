@@ -7,6 +7,7 @@ import { SimpleSelector, representatives } from './frames.js'
 import { MacCapture, SURFACE_MARKER } from './capture.js'
 import { AnalysisResponse } from './analysis-response.js'
 import { registerEventTools, prepareEventChanges } from './event-tools.js'
+import { JournalStore } from './storage.js'
 
 const validId = (id) => typeof id === 'string' && /^[A-Za-z0-9-]{4,80}$/.test(id)
 const contextKey = (value) => JSON.stringify([value.bundleId || value.app || '', value.pid || '', value.windowId || '', value.url || value.title || ''])
@@ -90,13 +91,14 @@ export class ScreenTrail {
     this.now = runtime.now || Date.now; this.uuid = runtime.uuid || randomUUID
     this.setTimer = runtime.setTimer || setTimeout; this.clearTimer = runtime.clearTimer || clearTimeout
     this.root = path.join(runtime.home || os.homedir(), '.dsh', 'screen-trail')
-    this.shots = path.join(this.root, 'shots'); this.stateFile = path.join(this.root, 'state.json'); this.diagnosticsDir = path.join(this.root, 'diagnostics')
+    this.shots = path.join(this.root, 'shots'); this.legacyStateFile = path.join(this.root, 'state.json'); this.databaseFile = path.join(this.root, 'journal.sqlite'); this.diagnosticsDir = path.join(this.root, 'diagnostics')
+    this.createStore = runtime.createStore || ((file, options) => new JournalStore(file, options))
     this.settings = { sampleIntervalSec: integer('sampleIntervalSec', config.sampleIntervalSec, 5, 1, Number.MAX_SAFE_INTEGER), analysisWindowSec: integer('analysisWindowSec', config.analysisWindowSec, 300, 15, 300),
       analysisMaxTokens: integer('analysisMaxTokens', config.analysisMaxTokens, 16384, 1024, 131072), retention: integer('retention', config.retention, 80, 6, 500),
       maxDimension: integer('maxDimension', config.maxDimension, 1600, 480, 4096), analysisReasoningEffort: config.analysisReasoningEffort,
       provider: config.provider || '', model: config.model || '', locale: config.locale || 'auto' }
     if (config.analysisReasoningEffort !== undefined && (typeof config.analysisReasoningEffort !== 'string' || !config.analysisReasoningEffort.trim())) throw new Error('analysisReasoningEffort must be a non-empty advertised effort ID')
-    this.records = []; this.activities = []; this.selector = new SimpleSelector(); this.captureQueue = []; this.protectedImages = new Set(); this.activeIds = new Set()
+    this.records = []; this.selector = new SimpleSelector(); this.captureQueue = []; this.protectedImages = new Set(); this.activeIds = new Set()
     this.analysisSessionId = null; this.analysisHandle = null; this.analysisWorkspace = null
     this.hasModelSettings = false
     this.eventBatches = new Map(); this.eventToolCalls = new Map(); this.eventToolDisposers = []
@@ -129,58 +131,63 @@ export class ScreenTrail {
   }
   async load() {
     await this.io.mkdir(this.shots, { recursive: true, mode: 0o700 })
-    let text
-    try { text = await this.io.readFile(this.stateFile, 'utf8') } catch (error) { if (error.code !== 'ENOENT') throw error }
-    if (text !== undefined) {
-      const state = JSON.parse(text)
-      if (![1, 2, 3, 4].includes(state.version) || !Array.isArray(state.records)) throw new Error('invalid history format')
-      if (state.analysisSessionId != null && !validId(state.analysisSessionId)) throw new Error('invalid analysis session id')
-      this.analysisSessionId = state.analysisSessionId ?? null
-      // 页面保存的用户选择优先于初始配置，旧数据没有该字段时沿用初始配置。
-      if (state.sampleIntervalSec !== undefined) this.settings.sampleIntervalSec = integer('sampleIntervalSec', state.sampleIntervalSec, 5, 1, Number.MAX_SAFE_INTEGER)
-      this.captureSource.sampleIntervalSec = this.settings.sampleIntervalSec
-      if (state.modelSettings !== undefined) {
-        const prefs = this.validateModelSettings(state.modelSettings)
-        this.settings.provider = prefs.provider; this.settings.model = prefs.model
-        this.settings.analysisReasoningEffort = prefs.reasoningEffort ?? undefined
-        this.hasModelSettings = true
-      }
-      this.records = state.records.map((item) => {
-        if (!validId(item.id) || !validId(item.imageId || item.id) || !Number.isFinite(item.at)
-          || (item.context !== undefined && (!item.context || typeof item.context !== 'object' || Array.isArray(item.context)))) throw new Error('invalid history record')
-        return { ...item, imageId: item.imageId || item.id, lastSeenAt: item.lastSeenAt || item.at, context: item.context || {},
-          analysisStatus: item.analysisStatus === 'complete' || item.analysis ? 'complete' : item.analysisError ? 'failed' : 'pending' }
-      })
-      if (state.version === 4) { if (!Array.isArray(state.activities)) throw new Error('invalid activity history'); this.activities = state.activities }
-      else {
-        // 老记录保留为独立活动，不清空历史，也不重新逐张请求模型。
-        this.activities = this.records.filter((item) => item.analysis).map((item) => ({ ...item, evidence: [evidence(item)], reason: 'activity' }))
-        this.log('history.migrated', { fromVersion: state.version, observations: this.records.length, activities: this.activities.length })
-      }
-      for (const activity of this.activities) if (!validId(activity.id) || !validId(activity.imageId) || !Number.isFinite(activity.at)
-        || typeof activity.analysis?.activity !== 'string' || typeof activity.analysis?.summary !== 'string' || !Array.isArray(activity.evidence) || !activity.evidence.length
-        || !activity.evidence.some((item) => item.imageId === activity.imageId)
-        || activity.evidence.some((item) => !validId(item.id) || !validId(item.imageId) || !Number.isFinite(item.at))) throw new Error('invalid activity record')
-      for (const id of this.imageIds()) await this.io.access(path.join(this.shots, `${id}.jpg`))
+    // 先以私有权限创建空文件，SQLite 的 WAL/SHM 会继承数据库权限。
+    try { await this.io.writeFile(this.databaseFile, '', { flag: 'ax', mode: 0o600 }) }
+    catch (error) { if (error.code !== 'EEXIST') throw error }
+    this.store = this.createStore(this.databaseFile, { now: this.now, log: (event, details) => this.log(event, details) })
+    await this.io.chmod(this.databaseFile, 0o600)
+    if (this.store.setting('legacyResetPending')) await this.resetLegacyHistory()
+    const interval = this.store.setting('sampleIntervalSec')
+    if (interval !== undefined) this.settings.sampleIntervalSec = integer('sampleIntervalSec', interval, 5, 1, Number.MAX_SAFE_INTEGER)
+    const window = this.store.setting('analysisWindowSec')
+    if (window !== undefined) this.settings.analysisWindowSec = integer('analysisWindowSec', window, 300, 15, 300)
+    this.captureSource.sampleIntervalSec = this.settings.sampleIntervalSec
+    const prefs = this.store.setting('modelSettings')
+    if (prefs !== undefined) {
+      this.validateModelSettings(prefs)
+      this.settings.provider = prefs.provider; this.settings.model = prefs.model
+      this.settings.analysisReasoningEffort = prefs.reasoningEffort ?? undefined; this.hasModelSettings = true
     }
+    this.analysisSessionId = this.store.setting('analysisSessionId') ?? null
+    if (this.analysisSessionId !== null && !validId(this.analysisSessionId)) throw new Error('invalid analysis session id')
+    this.records = this.store.pool().map((item) => ({ ...item, analysisStatus: item.analysisStatus === 'analyzing' ? 'pending' : item.analysisStatus }))
+    for (const id of this.imageIds()) await this.io.access(path.join(this.shots, `${id}.jpg`))
     // 独立目录对应宿主原生分组，不把共用的 profile 目录当作插件专属工作区。
     this.analysisWorkspace = await this.ctx.workspaceRegistry.create(this.root, '屏幕纪事')
     this.log('session.group_ready', { id: this.analysisWorkspace.id, path: this.analysisWorkspace.path, title: this.analysisWorkspace.title })
     this.eventToolDisposers = registerEventTools(this)
-    this.loaded = true; this.log('history.loaded', { observations: this.records.length, activities: this.activities.length }); return true
+    this.loaded = true; this.log('history.loaded', { observations: this.records.length, activities: this.store.eventCount(), storage: 'sqlite' }); return true
   }
-  imageIds() { return new Set([...this.records.map((item) => item.imageId), ...this.activities.flatMap((item) => item.evidence.map((frame) => frame.imageId)), ...this.protectedImages]) }
+  async resetLegacyHistory() {
+    let text
+    try { text = await this.io.readFile(this.legacyStateFile, 'utf8') } catch (error) { if (error.code !== 'ENOENT') throw error }
+    if (text !== undefined) {
+      const old = JSON.parse(text); const settings = {}
+      if (old.sampleIntervalSec !== undefined) settings.sampleIntervalSec = integer('sampleIntervalSec', old.sampleIntervalSec, 5, 1, Number.MAX_SAFE_INTEGER)
+      if (old.modelSettings !== undefined) settings.modelSettings = this.validateModelSettings(old.modelSettings)
+      // 用户选择不迁移历史；旧会话仍由宿主保留，但新库不再复用旧事件 ID 的上下文。
+      this.store.save({ settings: { ...settings, analysisSessionId: null } })
+    }
+    await this.io.rm(this.shots, { recursive: true, force: true })
+    await this.io.mkdir(this.shots, { recursive: true, mode: 0o700 })
+    await this.io.rm(this.diagnosticsDir, { recursive: true, force: true })
+    await this.io.rm(this.legacyStateFile, { force: true })
+    await this.io.rm(`${this.legacyStateFile}.tmp`, { force: true })
+    this.store.save({ settings: { legacyResetPending: false } })
+    this.log('history.legacy_reset', { preservedSettings: true, preservedHarnessChats: true })
+  }
+  get activities() { return this.store?.allEvents() || [] }
+  imageIds() { return new Set([...(this.store?.imageIds() || []), ...this.records.map((item) => item.imageId), ...this.protectedImages]) }
   persist() {
     const operation = this.writes.then(async () => {
       // 排到写队列时才取状态，避免旧快照覆盖刚完成的工具提交。
-      const payload = this.statePayload()
-      await this.io.writeFile(`${this.stateFile}.tmp`, payload, { encoding: 'utf8', mode: 0o600 }); await this.io.rename(`${this.stateFile}.tmp`, this.stateFile); this.lastPersistAt = this.now()
+      this.store.save({ records: this.records, settings: this.persistedSettings() }); this.lastPersistAt = this.now()
     }).catch((error) => { throw new StateWriteError(error) })
     this.writes = operation.catch((error) => this.fail('state.write', error, true)); return operation
   }
-  statePayload(overrides = {}) {
-    return JSON.stringify({ version: 4, records: this.records, activities: this.activities, analysisSessionId: this.analysisSessionId,
-      sampleIntervalSec: this.settings.sampleIntervalSec, ...(this.hasModelSettings ? { modelSettings: this.modelSettings() } : {}), ...overrides }, null, 2)
+  persistedSettings() {
+    return { analysisSessionId: this.analysisSessionId, sampleIntervalSec: this.settings.sampleIntervalSec, analysisWindowSec: this.settings.analysisWindowSec,
+      ...(this.hasModelSettings ? { modelSettings: this.modelSettings() } : {}) }
   }
   modelSettings() {
     const host = this.ctx.agentDefaultModel.currentSelection()
@@ -223,8 +230,7 @@ export class ScreenTrail {
     // 与事件写入共用串行持久化队列，保存成功后再发布新设置，当前轮次不受影响。
     const operation = this.writes.then(async () => {
       try {
-        await this.io.writeFile(`${this.stateFile}.tmp`, this.statePayload({ modelSettings: prefs }), { encoding: 'utf8', mode: 0o600 })
-        await this.io.rename(`${this.stateFile}.tmp`, this.stateFile)
+        this.store.save({ settings: { modelSettings: prefs } })
       } catch (error) { throw new StateWriteError(error) }
       this.settings.provider = prefs.provider; this.settings.model = prefs.model
       this.settings.analysisReasoningEffort = prefs.reasoningEffort ?? undefined
@@ -245,22 +251,14 @@ export class ScreenTrail {
       const records = this.records.map((item) => batchIds.has(item.id)
         ? { ...item, analysisStatus: 'complete', analysisError: null, selectedForAnalysis: context.selected.some((frame) => frame.id === item.id) } : item)
       try {
-        await this.io.writeFile(`${this.stateFile}.tmp`, this.statePayload({ records, activities: prepared.activities }), { encoding: 'utf8', mode: 0o600 })
         context.signal.throwIfAborted()
         if ((context.batch.length && context.version !== this.analysisVersion) || this.disposed) throw Object.assign(new Error('analysis batch changed before commit'), { code: 'EVENT_BATCH_CHANGED' })
-        await this.io.rename(`${this.stateFile}.tmp`, this.stateFile)
+        this.store.save({ records, events: prepared.activities, deletedIds: prepared.deletedIds }, context.signal)
       } catch (error) {
         if (context.signal.aborted || error.code === 'EVENT_BATCH_CHANGED') throw error
         throw new StateWriteError(error)
       }
-      // rename 是提交点；之后即使模型轮次失败，也不能把已落库批次重新排队创建。
-      // 写盘期间可能收到静止画面回调，保留仍存在的证据的最新停留时间。
-      const liveEvidence = new Map(this.activities.flatMap((item) => item.evidence).map((item) => [item.id, item]))
-      for (const item of prepared.activities) {
-        for (const frame of item.evidence) frame.lastSeenAt = Math.max(frame.lastSeenAt ?? frame.at, liveEvidence.get(frame.id)?.lastSeenAt ?? frame.lastSeenAt ?? frame.at)
-        item.lastSeenAt = Math.max(item.lastSeenAt, ...item.evidence.map((frame) => frame.lastSeenAt))
-      }
-      this.activities = prepared.activities
+      // SQLite COMMIT 是提交点；之后即使模型轮次失败，也不能重复创建已保存事件。
       this.records = this.records.map((item) => batchIds.has(item.id)
         ? { ...item, analysisStatus: 'complete', analysisError: null, selectedForAnalysis: context.selected.some((frame) => frame.id === item.id) } : item)
       context.receipt = prepared.receipt
@@ -290,7 +288,7 @@ export class ScreenTrail {
   }
   finishEventBatch(batch, selected, usedObservationIds = []) {
     const batchIds = new Set(batch.map((item) => item.id))
-    const retained = new Set([...usedObservationIds, ...this.activities.flatMap((item) => item.evidence.map((frame) => frame.id))])
+    const retained = new Set([...usedObservationIds, ...this.store.referencedObservationIds()])
     if (batchIds.has(this.records[0]?.id) && !retained.has(this.records[0].id)) this.selector.reset()
     this.records = this.records.filter((item) => !batchIds.has(item.id) || retained.has(item.id))
     this.status.ignored += selected.filter((item) => !retained.has(item.id)).length
@@ -324,6 +322,18 @@ export class ScreenTrail {
         catch (error) { this.fail('capture.interval', error, true); throw error }
       }
     }
+  }
+  async setAnalysisWindow(value) {
+    const interval = integer('analysisWindowSec', value, 300, 15, 300)
+    const operation = this.writes.then(() => {
+      try { this.store.save({ settings: { analysisWindowSec: interval } }) }
+      catch (error) { throw new StateWriteError(error) }
+      this.settings.analysisWindowSec = interval
+      this.log('analysis.window_changed', { analysisWindowSec: interval })
+      this.pumpAnalysis()
+    })
+    this.writes = operation.catch((error) => this.fail('analysis.window', error, true))
+    return operation
   }
   async start() {
     await this.assertReady()
@@ -386,14 +396,12 @@ export class ScreenTrail {
     }
     this.status.selfExcluded = false
     const last = this.records[0]
-    if (last && this.selector.key === last.imageId && contextKey(last.context) === contextKey(message.context)) this.extend(last, message.at)
+    if (last && this.selector.key === last.imageId && contextKey(last.context) === contextKey(message.context)) void this.extend(last, message.at).catch((error) => this.fail('capture.extend', error, true))
   }
   extend(record, at) {
     record.lastSeenAt = Math.max(record.lastSeenAt, at); this.status.extended += 1
-    for (const activity of this.activities) {
-      const last = activity.evidence.at(-1)
-      if (last?.id === record.id) { last.lastSeenAt = record.lastSeenAt; activity.lastSeenAt = record.lastSeenAt }
-    }
+    // 与观察一起提交结束时间；静止画面也必须触发写入，否则事件时间会停留在初次截图。
+    return this.persist()
   }
   enqueue(frame, manual = false) {
     if (this.disposed || (!this.running && !manual)) return Promise.resolve({ cancelled: true })
@@ -439,11 +447,11 @@ export class ScreenTrail {
     this.log('frame.checked', { imageId: frame.imageId, at: frame.at, decision: decision.kind, reason: decision.reason, score: decision.score })
     const last = this.records[0]
     if (decision.kind === 'extend' && last && contextKey(last.context) === contextKey(frame.context)) {
-      this.extend(last, frame.at); this.status.skipped += 1
-      if (this.now() - this.lastPersistAt >= 5000) await this.persist()
+      await this.extend(last, frame.at); this.status.skipped += 1
       return last
     }
-    const existing = this.imageIds().has(frame.imageId); this.protectedImages.add(frame.imageId)
+    const existing = this.store.hasImage(frame.imageId) || this.records.some((item) => item.imageId === frame.imageId)
+    this.protectedImages.add(frame.imageId)
     try {
       if (!existing) {
         const file = path.join(this.shots, `${frame.imageId}.jpg`)
@@ -561,7 +569,7 @@ export class ScreenTrail {
       }
       const joined = [...new Map([...item.evidence, ...merged.flatMap((source) => source.evidence), ...frames].map((frame) => [frame.id, frame])).values()].sort((a, b) => a.at - b.at)
       const cover = change.coverObservationId ? joined.find((frame) => frame.id === change.coverObservationId)
-        : joined.find((frame) => frame.imageId === item.imageId)
+        : joined.find((frame) => item.coverObservationId ? frame.id === item.coverObservationId : frame.imageId === item.imageId)
       if (!cover) throw new Error(`activity cover is missing from evidence: ${item.id}`)
       // 保留首张、主活动封面和最近证据，辅助步骤不能把主活动封面挤掉。
       const kept = new Set([joined[0], cover])
@@ -569,7 +577,7 @@ export class ScreenTrail {
       item.evidence = joined.filter((frame) => kept.has(frame))
       item.at = Math.min(item.at, ...merged.map((source) => source.at), joined[0].at)
       item.lastSeenAt = Math.max(item.lastSeenAt, ...merged.map((source) => source.lastSeenAt), ...joined.map((frame) => frame.lastSeenAt))
-      item.imageId = cover.imageId; item.context = cover.context; item.analysis = change.analysis; item.analysisStatus = 'complete'; item.analysisError = null
+      item.coverObservationId = cover.id; item.imageId = cover.imageId; item.context = cover.context; item.analysis = change.analysis; item.analysisStatus = 'complete'; item.analysisError = null
       for (const source of merged) this.activities.splice(this.activities.indexOf(source), 1)
       receipts.push({ id: item.id, action: merged.length ? 'merged' : created ? 'created' : 'updated', activity: item.analysis.activity, mergedIds: merged.map((source) => source.id) })
       this.log(`activity.${merged.length ? 'merged' : created ? 'created' : 'updated'}`, { id: item.id, goal: item.analysis.goal,
@@ -735,7 +743,7 @@ export class ScreenTrail {
     const configuredReasoningEffort = this.settings.analysisReasoningEffort
     const requestId = `${this.now().toString(36)}-${this.uuid().slice(0, 8)}`; const diagnosticEpoch = this.diagnosticEpoch
     let response = new AnalysisResponse(); const startedAt = this.now(); const maxTokens = this.settings.analysisMaxTokens
-    let reasoningEffort; let adapterDefaultEffort; let decisions; let savedActivityIds; let input; let errorCode = null; let errorMessage = null
+    let reasoningEffort; let adapterDefaultEffort; let decisions; let input; let errorCode = null; let errorMessage = null
     let context = { agentPreset: null, compactionAvailable: false, compactionAuto: null }; let contextBefore; let contextAfter
     const compactions = []
     const tools = { signal, requestId, batch, selected, version: this.analysisVersion, model: `${selection.provider}/${selection.model}`, active: false, calls: [], receipt: null, result: null }
@@ -746,9 +754,6 @@ export class ScreenTrail {
       if (Array.isArray(info?.inputModalities) && !info.inputModalities.includes('image')) throw new Error('selected model accepts no image input')
       const efforts = info?.reasoning?.efforts || []; adapterDefaultEffort = info?.reasoning?.defaultEffort; reasoningEffort = configuredReasoningEffort ?? adapterDefaultEffort
       if (reasoningEffort !== undefined && !efforts.some((item) => item.id === reasoningEffort)) throw Object.assign(new Error(`model does not advertise reasoning effort ${reasoningEffort}`), { code: 'UNSUPPORTED_REASONING_EFFORT' })
-      // 事件 ID 仅留在本地校验返回引用，不再把事件状态快照发送给模型。
-      const saved = this.activities.map((item) => ({ id: item.id }))
-      savedActivityIds = saved.map((item) => item.id)
       // 只从模型输入移除 bundleId，本地窗口识别与去重仍保留该字段。
       const observations = selected.map((item, index) => ({ number: index + 1, at: messageDateTime(item.at), lastSeenAt: messageDateTime(item.lastSeenAt),
         context: Object.fromEntries(Object.entries(item.context).filter(([key]) => key !== 'bundleId')), trigger: item.reason }))
@@ -790,7 +795,7 @@ export class ScreenTrail {
       errorMessage = error.message || String(error); error.code = errorCode; error.message = `${errorMessage} [request ${requestId}]`; throw error
     } finally {
       const diagnostic = { requestId, sessionId: this.analysisSessionId, at: startedAt, durationMs: this.now() - startedAt, ...selection, observationIds: batch.map((item) => item.id), selectedIds: selected.map((item) => item.id),
-        maxTokens, reasoningEffort: reasoningEffort ?? null, adapterDefaultEffort: adapterDefaultEffort ?? null, contextOwner: 'harness', ...context, contextBefore, contextAfter, compactions, savedActivityIds, decisions, ...response.metadata(),
+        maxTokens, reasoningEffort: reasoningEffort ?? null, adapterDefaultEffort: adapterDefaultEffort ?? null, contextOwner: 'harness', ...context, contextBefore, contextAfter, compactions, decisions, ...response.metadata(),
         eventCommit: tools.receipt, toolCalls: tools.calls, outcome: errorCode === 'ANALYSIS_CANCELLED' ? 'cancelled' : errorCode ? 'failed' : 'complete', errorCode, errorMessage }
       this.log('analysis.finished', diagnostic); await this.saveDiagnostic(diagnostic, response.text(), diagnosticEpoch, input)
     }
@@ -817,8 +822,9 @@ export class ScreenTrail {
   }
   collectImages() {
     return this.queueImages(async () => {
+      const referenced = this.imageIds()
       for (const name of await this.io.readdir(this.shots)) {
-        if (/^[A-Za-z0-9-]{4,80}\.jpg$/.test(name) && !this.imageIds().has(name.slice(0, -4))) await this.io.rm(path.join(this.shots, name), { force: true })
+        if (/^[A-Za-z0-9-]{4,80}\.jpg$/.test(name) && !referenced.has(name.slice(0, -4))) await this.io.rm(path.join(this.shots, name), { force: true })
       }
     })
   }
@@ -829,7 +835,6 @@ export class ScreenTrail {
       if (!item) break
       this.records.splice(this.records.indexOf(item), 1)
     }
-    if (this.activities.length > this.settings.retention) this.activities.length = this.settings.retention
     // 先提交引用变化再清理资源，失败时不能留下仍被历史引用的缺失图片。
     await this.persist(); await this.collectImages()
   }
@@ -837,15 +842,19 @@ export class ScreenTrail {
     if (!validId(id)) throw new Error('bad record id')
     if (this.analysisTask) this.cancelAnalysis()
     await this.writes
-    const activity = this.activities.find((item) => item.id === id); const record = this.records.find((item) => item.id === id)
+    const activity = this.store.getEvent(id); const record = this.records.find((item) => item.id === id)
     if (!activity && !record) throw new Error('record not found')
-    if (activity) this.activities.splice(this.activities.indexOf(activity), 1)
-    if (record) this.records.splice(this.records.indexOf(record), 1)
+    const records = this.records.filter((item) => item.id !== id)
+    try { this.store.save({ records, deletedIds: activity ? [id] : [] }) }
+    catch (error) { this.fail('entry.delete', error, true); throw error }
+    this.records = records
     await this.persist(); await this.collectImages(); this.log('entry.deleted', { id, kind: activity ? 'activity' : 'observation' }); this.pumpAnalysis()
   }
   async clear() {
     this.diagnosticEpoch += 1; this.pause(); await this.sampleTask; await this.analysisTask; await this.diagnosticWrites
-    this.records = []; this.activities = []; this.selector.reset(); this.lastModelCallAt = null
+    try { this.store.save({ records: [], clear: true, settings: this.persistedSettings() }) }
+    catch (error) { this.fail('history.clear', error, true); throw error }
+    this.records = []; this.selector.reset(); this.lastModelCallAt = null
     await this.persist(); await this.collectImages(); await this.io.rm(this.diagnosticsDir, { recursive: true, force: true })
     this.status.lastAnalysis = null; this.status.lastError = null; this.status.selfExcluded = false
     for (const name of ['captures', 'keyframes', 'analyses', 'modelCalls', 'reusedImages', 'extended', 'skipped', 'excluded', 'coalesced', 'ignored']) this.status[name] = 0
@@ -853,8 +862,8 @@ export class ScreenTrail {
   }
   async image(id) {
     if (!validId(id)) throw new Error('bad record id')
-    const activity = this.activities.find((item) => item.id === id)
-    const record = this.records.find((item) => item.id === id) || this.activities.flatMap((item) => item.evidence).find((item) => item.id === id)
+    const activity = this.store.getEvent(id)
+    const record = this.records.find((item) => item.id === id) || this.store.getObservation(id)
     if (!activity && !record) throw Object.assign(new Error('record not found'), { code: 'ENOENT' })
     return this.io.readFile(path.join(this.shots, `${(activity || record).imageId}.jpg`))
   }
@@ -863,13 +872,17 @@ export class ScreenTrail {
     await this.run('/usr/bin/open', ['x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'])
   }
   state() {
-    return { ok: true, version: '0.6.1', analysisSessionId: this.analysisSessionId, ready: this.loaded, running: this.running, capturePaused: this.capturePaused, capturePauseReason: this.capturePauseReason,
+    return { ok: true, version: '0.7.0', storage: 'sqlite', eventsRevision: this.store?.revision ?? 0, analysisSessionId: this.analysisSessionId, ready: this.loaded, running: this.running, capturePaused: this.capturePaused, capturePauseReason: this.capturePauseReason,
       unfinishedCount: this.unfinishedCount(), pendingCapacity: this.pendingCapacity(), captureResumeAt: this.resumeThreshold(), analysisEnabled: this.analysisEnabled, sampling: Boolean(this.sampleTask),
       analyzing: Boolean(this.analysisTask), busy: Boolean(this.sampleTask || this.analysisTask), queueLength: this.records.filter((item) => item.analysisStatus === 'pending').length,
       captureQueueLength: this.captureQueue.length, captureSource: this.captureSource.state, sampleIntervalSec: this.settings.sampleIntervalSec, captureFps: 1 / this.settings.sampleIntervalSec, analysisWindowSec: this.settings.analysisWindowSec,
-      imageCount: this.imageIds().size, activityCount: this.activities.length, retention: this.settings.retention, analysisMaxTokens: this.settings.analysisMaxTokens,
+      imageCount: this.store?.imageCount() ?? 0, activityCount: this.store?.eventCount() ?? 0, retention: this.settings.retention, analysisMaxTokens: this.settings.analysisMaxTokens,
       modelSettings: this.modelSettings(), hostModel: this.ctx.agentDefaultModel.currentSelection(),
-      ...this.status, records: this.activities, observations: this.records }
+      ...this.status, observations: this.records }
   }
-  async dispose() { this.disposed = true; for (const dispose of this.eventToolDisposers) dispose(); this.pause(); await this.sampleTask; await this.analysisTask; await this.analysisHandle?.dispose(); if (this.loaded) await this.persist() }
+  async dispose() {
+    this.disposed = true; for (const dispose of this.eventToolDisposers) dispose(); this.pause()
+    try { await this.sampleTask; await this.analysisTask; await this.analysisHandle?.dispose(); if (this.loaded) await this.persist() }
+    finally { this.store?.close() }
+  }
 }

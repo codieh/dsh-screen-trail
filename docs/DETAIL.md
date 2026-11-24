@@ -1,6 +1,6 @@
 ![Screen images become an activity timeline](preview.svg)
 
-## Simplified Capture (0.6.1)
+## Simplified Capture (0.7.0)
 
 A persistent macOS ScreenCaptureKit stream samples the primary display at a configurable interval, defaulting to once every five seconds. Enter a positive integer number of seconds in Sampling Interval; Enter or blur saves it across restarts. Changing it rebuilds capture without cancelling analysis. Idle messages extend presence without re-encoding images. There is no OCR, accessibility-body extraction, DOM parsing, input monitoring, audio or all-day video recording. Only application/window identity is read.
 
@@ -8,7 +8,7 @@ Simple RGB filtering removes near-duplicate candidates. JPEG files share SHA-256
 
 The model receives only selected representative images and their numbers, readable Asia/Taipei dates and window metadata, excluding bundleId. Full timelines, saved-state snapshots and selection explanations are not sent. Unselected candidates have not been judged by the model. Stored times remain milliseconds.
 
-The prompt asks for a useful journal rather than a page-by-page browsing history. The model chooses what to keep, continue, merge or omit, including an empty batch. There are no classification labels, scores, duration gates or extra interpretation calls. Visibility does not establish attention, reading, understanding or completion. Capture, selection budgets, stored history and UI are unchanged. Goals, progress, details and tags are optional; text arrays are no longer silently reduced to three details or five tags.
+The prompt asks for a useful journal rather than a page-by-page browsing history. The model chooses what to keep, continue, merge or omit, including an empty batch. There are no classification labels, scores, duration gates or extra interpretation calls. Visibility does not establish attention, reading, understanding or completion. Capture and selection budgets are unchanged; this release changes storage and date navigation. Goals, progress, details and tags are optional; text arrays are no longer silently reduced to three details or five tags.
 
 Use write_events with create/update/merge/delete actions and real IDs from tool results or find_events. mergeIds names the other events to consolidate. Screenshot numbers remain local to the batch. Existing descriptions can be updated without new images. Retained IDs and positions remain stable. There is no implicit same-label/window merge, deferred pool, undo or startup bulk rewrite.
 
@@ -50,17 +50,29 @@ A legacy associated conversation with no recorded preset stays untouched; the ne
 
 Two global native tools replace parsing final chat JSON and are available to every DSH conversation subject to host permissions: `screen_trail_find_events` queries compact records by keywords, date range or IDs (ten by default), optionally returning cover images or stored evidence IDs. `screen_trail_write_events` creates, updates, merges or deletes, returning real IDs and actions. Analysis uses current image numbers; ordinary chat can attach stored screenshots through evidenceIds. Existing IDs stay stable and unspecified update fields are preserved; new events require screenshot evidence.
 
-Each call is validated on a copy and committed through the serialized atomic state-file writer before publication. Replaying the same tool call reuses its receipt; new calls in the same turn may make further edits. The plugin does not call concludeTurn(): the model receives the result and can inspect, edit again or reply normally, potentially making additional model requests. Later model/chat-persistence failures are reported separately and cannot undo or requeue committed events.
+Each call reads only the affected events, validates on a copy and commits events, evidence relations and batch status in one serialized SQLite transaction before returning saved IDs. Replaying the same tool call reuses its receipt; new calls in the same turn may make further edits. The plugin does not call concludeTurn(): the model receives the result and can inspect, edit again or reply normally, potentially making additional model requests. Later model/chat-persistence failures are reported separately and cannot undo or requeue committed events.
 
-Tools, capture and UI share the existing service and state.json. No separate service or database is added. There is no plugin tool allowlist, file/terminal/network ban or executor override: DSH's own preset, approvals and security policies remain authoritative. Neither analysis nor ordinary chat writes force a turn conclusion. Candidates remain available until the turn finishes, so later edits can still use their images; unused candidates are reclaimed only at the end of a committed turn. Failed uncommitted batches retain evidence. Old records are not rewritten at startup; new conversations can query current records instead of receiving full snapshots.
+Tools, capture and UI share the existing service and journal.sqlite. No separate HTTP or MCP service is added. There is no plugin tool allowlist, file/terminal/network ban or executor override: DSH's own preset, approvals and security policies remain authoritative. Neither analysis nor ordinary chat writes force a turn conclusion. Candidates remain available until the turn finishes, so later edits can still use their images; unused candidates are reclaimed only at the end of a committed turn. Failed uncommitted batches retain evidence. New conversations can query current records instead of receiving full snapshots.
 
 ## Permissions
 
-The first launch compiles the helper using a local Swift compiler and caches it under `~/.dsh/screen-trail/native/`. Grant Screen Recording to DeepSeek Harness or the helper named by macOS. Accessibility and Input Monitoring are not required. Failures are visible; there is no silent switch to the old capture mode. Screenpipe and FFmpeg are not dependencies.
+Node.js 24 or newer is required for built-in node:sqlite. The first launch compiles the helper using a local Swift compiler and caches it under `~/.dsh/screen-trail/native/`. Grant Screen Recording to DeepSeek Harness or the helper named by macOS. Accessibility and Input Monitoring are not required. Failures are visible; there is no silent switch to the old capture mode. A database server, Screenpipe and FFmpeg are not dependencies.
 
 ## Storage and Backpressure
 
-Version-four `state.json` separates raw observations and activities. Existing history migrates without clearing. Shared JPEGs live under `shots/`. By default, 80 processed raw observations and 80 activities are retained. Pending observations have a separate capacity. Each activity keeps at most twelve evidence frames: its first, chosen cover and recent evidence. Referenced images survive observation pruning.
+`~/.dsh/screen-trail/journal.sqlite` has four tables: events, observations, event_observations and settings. Times remain milliseconds. Schema version is PRAGMA user_version=1; foreign keys, WAL and transactions are enabled. The database is created with mode 0600. Shared JPEGs remain under shots/ rather than becoming database blobs.
+
+On the first upgrade load, legacy JSON history, screenshots and diagnostics are discarded as requested, not migrated. Saved sampling/model preferences survive. Harness conversations are not deleted, but the old analysis-session association is not reused with the empty database. A persisted cleanup marker makes interrupted cleanup explicit and resumable. Corrupt databases are reported, never replaced with empty data or a JSON fallback.
+
+Formal events have no count-based eviction. The temporary observation pool defaults to 80 processed observations; referenced evidence survives leaving that pool, and pending observations have a separate capacity. Each event keeps at most twelve evidence frames: its first, chosen cover and recent evidence. Reference changes commit before unused images are collected.
+
+## Date Tabs and Pagination
+
+The panel defaults to today and displays seven horizontal date tabs, previous/next-day controls and a date picker. Dates use Asia/Taipei, not the machine timezone. Empty dates remain selected and show an empty state. Events are sorted by start time descending, thirty per page, with Load More. Cross-midnight events belong only to their start date, with the full end date shown on the card. Details, cover/evidence previews and deletion remain available; temporary observations stay in a separate collapsible section.
+
+GET /screen-trail/api/state returns status, total count, eventsRevision and bounded temporary observations, not full event history. GET /screen-trail/api/events?date=YYYY-MM-DD&limit=30&cursor=... uses stable keyset pagination. Event changes refresh the already loaded pages without resetting the selected date, expanded card or scroll position. Date switches cancel obsolete requests. Changes between page requests surface an explicit retry message rather than mixing inconsistent snapshots.
+
+## Queue and Cleanup
 
 Only one frame is processed and one stream frame may wait; superseded waiting frames are counted and logged. Pending capacity is the ceiling of (analysis window plus ninety-second timeout) divided by the sampling interval, and is never smaller than history retention. At the five-second default, capacity is 80 with a 74-frame resume watermark. Capture pauses at capacity while analysis drains. User pause stops both; Analyse Now can process remaining candidates. Clearing removes plugin-owned data, preserving helper binaries and configuration. Host-managed attachments have independent retention; local collection does not delete those copies.
 
@@ -68,7 +80,7 @@ The latest 50 diagnostics preserve native session/batch/selected/saved-event IDs
 
 Defaults: `sampleIntervalSec: 5`, `analysisWindowSec: 300`, `analysisMaxTokens: 16384`, `analysisReasoningEffort: low`, `maxDimension: 1600`, `retention: 80`, `autoStart: false`. The bundle explicitly requests low reasoning; an unsupported effort fails rather than silently degrading. Sampling and analysis intervals are independent; the saved UI choice takes precedence over initial sampling configuration. Other old event-trigger timing settings are retired with a migration log. Optional model controls remain supported.
 
-The panel provides model and reasoning selectors with explicit Save. Models come from DSH's active providers and reasoning choices from the selected model's metadata; declared text-only models are excluded. Host-model following and model-default reasoning are available. Unsupported reasoning is shown rather than silently replaced. Saved settings persist in the existing state.json, override initial plugin config, and affect the next analysis without interrupting the running one or changing DSH's global defaults. Refresh reloads metadata; errors remain visible. No generation is performed by configuration endpoints.
+The panel provides model and reasoning selectors with explicit Save. Models come from DSH's active providers and reasoning choices from the selected model's metadata; declared text-only models are excluded. Host-model following and model-default reasoning are available. Unsupported reasoning is shown rather than silently replaced. Sampling, analysis-window and model settings persist in SQLite, override initial plugin config, and affect subsequent work without interrupting the running analysis or changing DSH's global defaults. Refresh reloads metadata; errors remain visible. No generation is performed by configuration endpoints.
 
 Run `npm test`. Tests inject frames, storage and responses, including a host-provided compacted-history contract fixture; they do not perform real model compaction or prove judgment accuracy. Evaluate real blank pages, brief PDF appearances, sustained static viewing and short important results separately. Actual recording and model quality require authorised verification.
 

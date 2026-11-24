@@ -1,8 +1,9 @@
 {
   "name": "@local/dsh-screen-trail",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
+  "engines": { "node": ">=24" },
   "description": "Native low-frame-rate capture with batched visual analysis and activity-level summaries.",
   "scripts": {
     "test": "node --test --test-timeout=10000"
@@ -17,6 +18,7 @@
     "index.js",
     "frames.js",
     "trail.js",
+    "storage.js",
     "event-tools.js",
     "analysis-response.js",
     "capture.js",

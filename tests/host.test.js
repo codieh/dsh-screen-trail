@@ -98,7 +98,7 @@ test('clear cancels an in-flight result and removes owned images and diagnostics
   h.release(); await h.settle(); await h.advance(90000)
   assert.equal(h.state().records.length, 0); assert.equal(h.state().observations.length, 0); assert.equal(h.state().running, false)
   assert.equal([...h.files.keys()].filter((name) => name.endsWith('.jpg')).length, 0)
-  assert.equal(JSON.parse(h.files.get(`${root}/state.json`)).version, 4)
+  assert.equal(h.trail.store.eventCount(), 0)
 })
 
 test('activity evidence remains readable after its raw observation is pruned', async (t) => {
@@ -118,13 +118,17 @@ test('corrupt history is reported and never replaced with empty history', async 
   await h.dispose(); assert.equal(h.files.get(`${root}/state.json`), '{broken json')
 })
 
-test('version one history migrates without losing its screenshot or summary', async (t) => {
-  const h = await createHost({ history: { version: 1, records: [{ id: 'legacy-frame', at: 1699999990000, analysis: { activity: '阅读', summary: '旧版记录。' } }] } }); t.after(h.dispose)
-  assert.equal(h.state().records[0].evidence[0].imageId, 'legacy-frame')
-  assert.equal(h.state().records[0].analysis.summary, '旧版记录。')
+test('legacy history is discarded once while user preferences survive and old chats are not reused', async (t) => {
+  const h = await createHost({ legacyHistory: { version: 1, analysisSessionId: 'old-session', sampleIntervalSec: 15,
+    modelSettings: { provider: '', model: '', reasoningEffort: null },
+    records: [{ id: 'legacy-frame', at: 1699999990000, analysis: { activity: '阅读', summary: '旧版记录。' } }] } }); t.after(h.dispose)
+  assert.equal(h.state().records.length, 0); assert.equal(h.state().observations.length, 0)
+  assert.equal(h.state().sampleIntervalSec, 15); assert.equal(h.state().analysisSessionId, null)
+  assert.equal(h.files.has(`${root}/shots/legacy-frame.jpg`), false)
   await h.trail.manualCapture(); await h.settle()
   assert.doesNotMatch(h.requests[0].messages[0].content[0].text, /旧版记录/)
-  assert.equal(JSON.parse(h.files.get(`${root}/state.json`)).version, 4)
+  assert.equal(h.files.has(`${root}/state.json`), false)
+  assert.equal(h.trail.store.setting('legacyResetPending'), false)
 })
 
 test('native permission failure rejects startup without a polling fallback', async (t) => {

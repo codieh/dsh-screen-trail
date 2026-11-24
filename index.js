@@ -59,6 +59,20 @@ export function registerRoutes(ctx, trail) {
     if (!['GET', 'HEAD'].includes(request.method)) { send(response, 405, { ok: false, error: 'method not allowed' }); return }
     send(response, 200, trail.state())
   })
+  register('events', async (request, response) => {
+    if (!admit(request, response)) return
+    if (!['GET', 'HEAD'].includes(request.method)) { send(response, 405, { ok: false, error: 'method not allowed' }); return }
+    try {
+      await trail.assertReady()
+      const params = new URL(request.url, 'http://localhost').searchParams
+      const result = trail.store.listDay({ date: params.get('date'), limit: params.has('limit') ? Number(params.get('limit')) : 30,
+        cursor: params.get('cursor') || undefined })
+      send(response, 200, result)
+    } catch (error) {
+      trail.log('events.list_failed', { message: error.message })
+      send(response, /date|limit|cursor/.test(error.message) ? 400 : 500, { ok: false, error: error.message })
+    }
+  })
   register('control', async (request, response) => {
     if (!admit(request, response, true)) return
     if (request.method !== 'POST') { send(response, 405, { ok: false, error: 'method not allowed' }); return }
@@ -89,8 +103,7 @@ export function registerRoutes(ctx, trail) {
         case 'setInterval': {
           const value = Number(body.intervalSec)
           if (!Number.isInteger(value) || value < 15 || value > 300) throw new Error('intervalSec must be an integer between 15 and 300')
-          trail.settings.analysisWindowSec = value
-          trail.pumpAnalysis()
+          await trail.setAnalysisWindow(value)
           break
         }
         case 'setSampleInterval': await trail.setSampleInterval(Number(body.intervalSec)); break
