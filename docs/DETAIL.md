@@ -80,6 +80,14 @@ The panel provides model and reasoning selectors with explicit Save. Models come
 
 Run `npm test`. Tests use simulated screens and model responses to cover sampling, selection, event tools, SQLite transactions, date paging, resource cleanup and host-session interfaces. They do not call cloud models or record the screen.
 
+## TypeScript Development
+
+This branch extends the existing src/dist layout with the current SQLite store, event tools, date tabs and automatic recovery. Run npm ci and npm run build before loading a local checkout. Builds emit JavaScript, declarations and source maps; public export names remain unchanged. The capture module resolves the Swift source from the package's native/ directory.
+
+npm run typecheck checks all sources and strictly checks frame selection, stream assembly, SQLite and compile-time contracts. Domain records, settings, retry batches, capture interfaces and frontend state have explicit types. Host coordination and UI retain the original branch's non-strict compiler settings; open host events and tool JSON remain dynamic runtime-validated boundaries. Tests remain JavaScript and execute the emitted modules.
+
+npm test and npm pack build automatically. Build first if using npm pack --ignore-scripts. Packages contain emitted modules and native resources, not development dependencies, tests, local databases or previous tarballs.
+
 ## CI
 
-Pushes, pull requests and manual dispatch run one Node.js 24 / Apple Silicon macOS 15 job: unit/package checks, Swift compilation, native no-capture self-tests, then an installable package artifact. Failures block later steps; reports upload on test failure.
+Pushes, pull requests and manual dispatch run one Node.js 24 / Apple Silicon macOS 15 job: locked build dependencies, type checks, build and unit/package checks, Swift compilation, native no-capture self-tests, then an installable package artifact. Failures block later steps; reports upload on test failure.

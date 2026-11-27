@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createHost } from './harness.js'
-import { findEvents } from '../event-tools.js'
+import { findEvents } from '../dist/event-tools.js'
 
 const create = (activity = '编写 LeetCode 438') => ({ action: 'create', activity, summary: '编写滑动窗口代码。', images: [1] })
 

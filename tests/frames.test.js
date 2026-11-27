@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { frameDifference, SimpleSelector } from '../frames.js'
+import { frameDifference, SimpleSelector } from '../dist/frames.js'
 
 function image(width = 32, height = 16) { return { width, height, pixels: new Uint8Array(width * height), rgb: new Uint8Array(width * height * 3) } }
 test('the first frame has no comparison baseline', () => { assert.equal(frameDifference(image(), null), 1) })

@@ -1,8 +1,14 @@
+interface Window { __ModuleLoader__: { load(entry: { id: string; factory(require: (id: string) => any): unknown }): void } }
+type PanelState = ReturnType<import('./trail.js').ScreenTrail['state']>
+type EventPage = import('./types.js').DayPage & { pages: number }
+type ModelDetails = Awaited<ReturnType<import('./trail.js').ScreenTrail['modelDetails']>>
+type ModelCatalog = Awaited<ReturnType<import('./trail.js').ScreenTrail['modelCatalog']>>['models']
 window.__ModuleLoader__.load({
   id: '@local/dsh-screen-trail',
   factory(require) {
-    const React = require('react')
-    const h = React.createElement
+    const React: typeof import('react') = require('react')
+    // 宿主 Slot 接收动态属性；状态和组件输入在本文件内仍使用明确的类型。
+    const h = React.createElement as (type: unknown, props?: object | null, ...children: unknown[]) => import('react').ReactElement
 
     const NS = 'screen-trail'
     const PANEL_ID = 'screen-trail'
@@ -384,12 +390,12 @@ window.__ModuleLoader__.load({
     function ModelSettings({ state, pending, act, t }) {
       const prefs = state.modelSettings || { provider: '', model: '', reasoningEffort: null }
       const savedKey = JSON.stringify(prefs)
-      const [catalog, setCatalog] = React.useState([])
+      const [catalog, setCatalog] = React.useState<ModelCatalog>([])
       const [modelKey, setModelKey] = React.useState(prefs.provider && prefs.model ? JSON.stringify([prefs.provider, prefs.model]) : '')
       const [effort, setEffort] = React.useState(prefs.reasoningEffort || '')
-      const [info, setInfo] = React.useState(null)
-      const [catalogError, setCatalogError] = React.useState(null)
-      const [error, setError] = React.useState(null)
+      const [info, setInfo] = React.useState<ModelDetails | null>(null)
+      const [catalogError, setCatalogError] = React.useState<string | null>(null)
+      const [error, setError] = React.useState<string | null>(null)
       const [refresh, setRefresh] = React.useState(0)
       const [loading, setLoading] = React.useState(true)
       const hostKey = modelKey ? '' : JSON.stringify([state.hostModel?.provider, state.hostModel?.model])
@@ -463,23 +469,23 @@ window.__ModuleLoader__.load({
       const locale = (typeof document !== 'undefined' && document.documentElement.lang)
         || (typeof navigator !== 'undefined' && navigator.language)
         || 'en'
-      const [state, setState] = React.useState(null)
-      const [error, setError] = React.useState(null)
+      const [state, setState] = React.useState<PanelState | null>(null)
+      const [error, setError] = React.useState<string | null>(null)
       const [pending, setPending] = React.useState(false)
-      const [open, setOpen] = React.useState(null)
-      const [preview, setPreview] = React.useState(null)
+      const [open, setOpen] = React.useState<string | null>(null)
+      const [preview, setPreview] = React.useState<string | null>(null)
       const [confirming, setConfirming] = React.useState(false)
       const seq = React.useRef(0)
-      const previewRef = React.useRef(null)
-      const pageRef = React.useRef(null)
+      const previewRef = React.useRef<HTMLDivElement | null>(null)
+      const pageRef = React.useRef<HTMLDivElement | null>(null)
       const today = journalDate(Date.now())
       const [selectedDate, setSelectedDate] = React.useState(today)
       const [pageCount, setPageCount] = React.useState(1)
-      const [eventPage, setEventPage] = React.useState(null)
-      const [eventError, setEventError] = React.useState(null)
+      const [eventPage, setEventPage] = React.useState<EventPage | null>(null)
+      const [eventError, setEventError] = React.useState<string | null>(null)
       const [eventsLoading, setEventsLoading] = React.useState(false)
       const [eventRetry, setEventRetry] = React.useState(0)
-      const eventCache = React.useRef(null)
+      const eventCache = React.useRef<EventPage | null>(null)
 
       React.useEffect(() => {
         const page = pageRef.current
@@ -569,7 +575,7 @@ window.__ModuleLoader__.load({
         return () => window.removeEventListener('keydown', onKey)
       }, [preview])
 
-      const act = React.useCallback(async (action, extra) => {
+      const act = React.useCallback(async (action: string, extra?: Record<string, unknown>) => {
         seq.current += 1
         setPending(true)
         try {

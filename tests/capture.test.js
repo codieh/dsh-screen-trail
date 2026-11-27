@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import test from 'node:test'
-import { MacCapture, decodeFrame } from '../capture.js'
+import { MacCapture, decodeFrame } from '../dist/capture.js'
 import { makeFrame, settle } from './harness.js'
 
 function packet(context = { app: 'Editor', title: 'Code' }) {

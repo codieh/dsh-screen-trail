@@ -1,3 +1,7 @@
+import type { ScreenTrail } from './trail.js'
+import type { JournalStore } from './storage.js'
+import type { EventQuery, EventSummary, EventBatch } from './types.js'
+import type { ToolExecution } from './host.js'
 export const EVENT_TOOLS = ['screen_trail_find_events', 'screen_trail_write_events']
 const fail = (message, code = 'EVENT_TOOL_INVALID') => { throw Object.assign(new Error(message), { code }) }
 const objectSchema = { type: 'object', additionalProperties: true }
@@ -8,8 +12,8 @@ const output = { schema: objectSchema, render: (_args, value) => [
 const strings = { type: 'array', items: { type: 'string' } }
 
 /** 全局注册业务能力；是否可执行仍由 DSH 原有预设、权限和工具策略决定。 */
-export function registerEventTools(trail) {
-  const contextFor = (exec, cache = false) => {
+export function registerEventTools(trail: ScreenTrail) {
+  const contextFor = (exec: ToolExecution, cache = false): EventBatch => {
     const batch = trail.eventBatches.get(exec.agent?.id)
     if (!cache && batch?.active) return batch
     const boundary = exec.agent ? trail.ctx.agents.turnBoundaryOf(exec.agent.session) : null
@@ -18,7 +22,7 @@ export function registerEventTools(trail) {
     const route = exec.agent?.session.requestHeader?.()?.config || exec.agent?.options
     const parent = batch?.active ? batch : null
     // 每次工具调用独立提交；关联分析批次仅用于图片编号、计数和最终回收。
-    const context = { signal: parent ? AbortSignal.any([parent.signal, exec.signal]) : exec.signal,
+    const context: EventBatch = { signal: parent ? AbortSignal.any([parent.signal, exec.signal]) : exec.signal,
       requestId: parent?.requestId ?? `tool-${exec.callId}`, agentId: exec.agent?.id, parent,
       batch: parent?.batch ?? [], selected: parent?.selected ?? [], version: parent?.version,
       model: parent?.model ?? (route?.provider && route?.model ? `${route.provider}/${route.model}` : 'local/tool'),
@@ -98,7 +102,7 @@ function date(value) {
   if (!Number.isFinite(result) || readableDate(result) !== value) fail('invalid date')
   return result
 }
-export function findEvents(store, args = {}) {
+export function findEvents(store: JournalStore, args: EventQuery = {}): {total: number; events: EventSummary[]} {
   if (args.ids !== undefined && (!Array.isArray(args.ids) || args.ids.some((id) => typeof id !== 'string'))) fail('ids must be strings')
   if (args.query !== undefined && typeof args.query !== 'string') fail('query must be a string')
   const limit = args.limit ?? 10

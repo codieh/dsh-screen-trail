@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { SimpleSelector, representatives } from '../frames.js'
+import { SimpleSelector, representatives } from '../dist/frames.js'
 import { makeFrame } from './harness.js'
 
 test('simple selector filters duplicate images but preserves context boundaries and manual evidence', () => {

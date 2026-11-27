@@ -1,9 +1,14 @@
-import { DatabaseSync } from 'node:sqlite'
+import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
+import type { Activity, Observation, StoredObservation, Settings, StoreOptions, JournalWrite, DayQuery, DayPage, StoredQuery, StoredSummary } from './types.js'
+
+interface ObservationRow { id: string; image_id: string; at: number; last_seen_at: number; context_json: string; trigger: string;
+  analysis_status: Observation['analysisStatus']; analysis_error: string | null; selected_for_analysis: number; extra_json: string }
+interface EventRow { id: string; started_at: number; last_seen_at: number; cover_observation_id: string; activity: string; summary: string; extra_json: string }
 
 const DAY_MS = 86400000
 const OFFSET_MS = 8 * 3600000
-export const journalDay = (at) => new Date(at + OFFSET_MS).toISOString().slice(0, 10)
-export function dayBounds(day) {
+export const journalDay = (at: number): string => new Date(at + OFFSET_MS).toISOString().slice(0, 10)
+export function dayBounds(day: string): [number, number] {
   if (typeof day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Error('date must be YYYY-MM-DD')
   const start = Date.parse(`${day}T00:00:00+08:00`)
   if (!Number.isFinite(start) || journalDay(start) !== day) throw new Error('invalid calendar date')
@@ -12,12 +17,17 @@ export function dayBounds(day) {
 
 /** SQLite 是正式事件的唯一来源；内存只保留有上限的采集队列。 */
 export class JournalStore {
-  constructor(file, { now = Date.now, log = () => {} } = {}) {
+  declare now: () => number;
+  declare log: NonNullable<StoreOptions['log']>;
+  declare db: any;
+  declare fresh: boolean;
+
+  constructor(file: string, { now = Date.now, log = () => {} }: StoreOptions = {}) {
     this.now = now; this.log = log
     this.db = new DatabaseSync(file, { timeout: 5000 })
     try {
       this.db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;')
-      const version = this.db.prepare('PRAGMA user_version').get().user_version
+      const version = this.row<{ user_version: number }>('PRAGMA user_version')!.user_version
       if (version !== 0 && version !== 1) throw new Error(`unsupported journal database version: ${version}`)
       this.fresh = version === 0
       if (this.fresh) this.transaction(() => {
@@ -56,7 +66,10 @@ export class JournalStore {
       this.log('database.opened', { version: 1, fresh: this.fresh })
     } catch (error) { this.db.close(); throw error }
   }
-  transaction(fn, stage = 'write', signal) {
+  // SQLite 驱动返回的通用行只在这一边界转换，业务代码使用明确的列类型。
+  private row<T>(sql: string, ...params: SQLInputValue[]): T | undefined { return this.db.prepare(sql).get(...params) as T | undefined }
+  private rows<T>(sql: string, ...params: SQLInputValue[]): T[] { return this.db.prepare(sql).all(...params) as T[] }
+  transaction<T>(fn: () => T, stage = 'write', signal?: AbortSignal): T {
     this.db.exec('BEGIN IMMEDIATE')
     try {
       signal?.throwIfAborted()
@@ -68,29 +81,29 @@ export class JournalStore {
     } catch (error) {
       try { this.db.exec('ROLLBACK') }
       catch (rollback) { throw new AggregateError([error, rollback], 'journal transaction and rollback failed') }
-      this.log('database.rolled_back', { stage, message: error.message })
+      this.log('database.rolled_back', { stage, message: (error as Error).message })
       throw error
     }
   }
-  setting(key) {
-    const row = this.db.prepare('SELECT value_json FROM settings WHERE key = ?').get(key)
-    return row ? JSON.parse(row.value_json) : undefined
+  setting<K extends keyof Settings>(key: K): Settings[K] | undefined {
+    const row = this.row<{ value_json: string }>('SELECT value_json FROM settings WHERE key = ?', key)
+    return row ? JSON.parse(row.value_json) as Settings[K] : undefined
   }
-  setSetting(key, value) {
+  setSetting<K extends keyof Settings>(key: K, value: Settings[K]): void {
     this.db.prepare(`INSERT INTO settings VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json
       WHERE settings.value_json != excluded.value_json`).run(key, JSON.stringify(value))
   }
-  get revision() { return this.setting('journalRevision') }
+  get revision(): number { return this.setting('journalRevision')! }
   bumpRevision() { this.setSetting('journalRevision', this.revision + 1) }
-  observation(row) {
+  observation(row: ObservationRow | undefined): Observation | null {
     if (!row) return null
     return { ...JSON.parse(row.extra_json), id: row.id, imageId: row.image_id, at: row.at, lastSeenAt: row.last_seen_at,
       context: JSON.parse(row.context_json), reason: row.trigger, analysisStatus: row.analysis_status,
       analysisError: row.analysis_error, selectedForAnalysis: Boolean(row.selected_for_analysis) }
   }
-  getObservation(id) { return this.observation(this.db.prepare('SELECT * FROM observations WHERE id=?').get(id)) }
-  pool() { return this.db.prepare('SELECT * FROM observations WHERE in_pool=1 ORDER BY at DESC, id DESC').all().map((row) => this.observation(row)) }
-  putObservation(item, inPool) {
+  getObservation(id: string): Observation | null { return this.observation(this.row<ObservationRow>('SELECT * FROM observations WHERE id=?', id)) }
+  pool(): Observation[] { return this.rows<ObservationRow>('SELECT * FROM observations WHERE in_pool=1 ORDER BY at DESC, id DESC').map((row) => this.observation(row)!) }
+  putObservation(item: StoredObservation, inPool: number): void {
     const { id, imageId, at, lastSeenAt = at, context = {}, reason = 'activity', analysisStatus = 'complete',
       analysisError = null, selectedForAnalysis = false, ...extra } = item
     this.db.prepare(`INSERT INTO observations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -103,10 +116,10 @@ export class JournalStore {
         OR observations.extra_json != excluded.extra_json`).run(id, imageId, at, lastSeenAt, JSON.stringify(context), reason,
       analysisStatus, analysisError, Number(selectedForAnalysis), inPool, JSON.stringify(extra))
   }
-  hydrate(row) {
+  hydrate(row: EventRow | undefined): Activity | null {
     if (!row) return null
-    const evidence = this.db.prepare(`SELECT o.* FROM observations o JOIN event_observations eo ON eo.observation_id=o.id
-      WHERE eo.event_id=? ORDER BY o.at, o.id`).all(row.id).map((item) => this.observation(item))
+    const evidence = this.rows<ObservationRow>(`SELECT o.* FROM observations o JOIN event_observations eo ON eo.observation_id=o.id
+      WHERE eo.event_id=? ORDER BY o.at, o.id`, row.id).map((item) => this.observation(item)!)
       .map(({ id, imageId, at, lastSeenAt, context }) => ({ id, imageId, at, lastSeenAt, context }))
     const cover = evidence.find((item) => item.id === row.cover_observation_id)
     if (!cover) throw new Error(`event cover is missing from evidence: ${row.id}`)
@@ -114,15 +127,15 @@ export class JournalStore {
       evidence, reason: 'activity', analysisStatus: 'complete', analysisError: null,
       analysis: { ...JSON.parse(row.extra_json), activity: row.activity, summary: row.summary } }
   }
-  getEvent(id) { return this.hydrate(this.db.prepare('SELECT * FROM events WHERE id=?').get(id)) }
+  getEvent(id: string): Activity | null { return this.hydrate(this.row<EventRow>('SELECT * FROM events WHERE id=?', id)) }
   // 仅供显式导出及测试快照；页面与模型查询不加载全部历史。
-  allEvents() { return this.db.prepare('SELECT * FROM events ORDER BY started_at DESC, id DESC').all().map((row) => this.hydrate(row)) }
-  eventCount() { return this.db.prepare('SELECT COUNT(*) AS n FROM events').get().n }
-  referencedObservationIds() { return new Set(this.db.prepare('SELECT DISTINCT observation_id AS id FROM event_observations').all().map((row) => row.id)) }
-  imageIds() { return new Set(this.db.prepare('SELECT DISTINCT image_id AS id FROM observations').all().map((row) => row.id)) }
-  imageCount() { return this.db.prepare('SELECT COUNT(DISTINCT image_id) AS n FROM observations').get().n }
-  hasImage(id) { return Boolean(this.db.prepare('SELECT 1 FROM observations WHERE image_id=? LIMIT 1').get(id)) }
-  putEvent(item) {
+  allEvents(): Activity[] { return this.rows<EventRow>('SELECT * FROM events ORDER BY started_at DESC, id DESC').map((row) => this.hydrate(row)!) }
+  eventCount(): number { return this.row<{ n: number }>('SELECT COUNT(*) AS n FROM events')!.n }
+  referencedObservationIds(): Set<string> { return new Set(this.rows<{ id: string }>('SELECT DISTINCT observation_id AS id FROM event_observations').map((row) => row.id)) }
+  imageIds(): Set<string> { return new Set(this.rows<{ id: string }>('SELECT DISTINCT image_id AS id FROM observations').map((row) => row.id)) }
+  imageCount(): number { return this.row<{ n: number }>('SELECT COUNT(DISTINCT image_id) AS n FROM observations')!.n }
+  hasImage(id: string): boolean { return Boolean(this.row('SELECT 1 FROM observations WHERE image_id=? LIMIT 1', id)) }
+  putEvent(item: Activity): void {
     for (const frame of item.evidence) {
       const stored = this.getObservation(frame.id)
       this.putObservation({ ...(stored || {}), ...frame, lastSeenAt: Math.max(stored?.lastSeenAt ?? frame.at, frame.lastSeenAt) }, 0)
@@ -140,14 +153,14 @@ export class JournalStore {
     const insert = this.db.prepare('INSERT INTO event_observations VALUES (?, ?)')
     for (const frame of item.evidence) insert.run(item.id, frame.id)
   }
-  save({ records, settings = {}, events = [], deletedIds = [], clear = false }, signal) {
+  save({ records, settings = {}, events = [], deletedIds = [], clear = false }: JournalWrite, signal?: AbortSignal): void {
     return this.transaction(() => {
       let changed = clear || events.length > 0 || deletedIds.length > 0
-      const released = new Set()
+      const released = new Set<string>()
       if (clear) this.db.exec('DELETE FROM events; DELETE FROM observations;')
       if (records) {
         const liveIds = new Set(records.map((item) => item.id))
-        for (const row of this.db.prepare('SELECT id FROM observations WHERE in_pool=1').all()) {
+        for (const row of this.rows<{ id: string }>('SELECT id FROM observations WHERE in_pool=1')) {
           if (!liveIds.has(row.id)) { this.db.prepare('UPDATE observations SET in_pool=0 WHERE id=?').run(row.id); released.add(row.id) }
         }
         for (const record of records) {
@@ -163,38 +176,38 @@ export class JournalStore {
         }
       }
       for (const id of [...events.map((item) => item.id), ...deletedIds]) {
-        for (const row of this.db.prepare('SELECT observation_id AS id FROM event_observations WHERE event_id=?').all(id)) released.add(row.id)
+        for (const row of this.rows<{ id: string }>('SELECT observation_id AS id FROM event_observations WHERE event_id=?', id)) released.add(row.id)
       }
       for (const item of events) this.putEvent(item)
       for (const id of deletedIds) this.db.prepare('DELETE FROM events WHERE id=?').run(id)
       // 只检查此次失去引用的记录，不在每次采样时扫描所有历史证据。
       for (const id of released) this.db.prepare(`DELETE FROM observations WHERE id=? AND in_pool=0
         AND NOT EXISTS (SELECT 1 FROM event_observations WHERE observation_id=observations.id)`).run(id)
-      for (const [key, value] of Object.entries(settings)) this.setSetting(key, value)
+      for (const key of Object.keys(settings) as Array<keyof Settings>) this.setSetting(key, settings[key]!)
       if (changed) this.bumpRevision()
     }, 'journal', signal)
   }
-  listDay({ date, limit = 30, cursor } = {}) {
+  listDay({ date, limit = 30, cursor }: DayQuery): DayPage {
     const [start, end] = dayBounds(date)
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 80) throw new Error('limit must be 1..80')
-    let after = ''; const params = [start, end]
+    let after = ''; const params: SQLInputValue[] = [start, end]
     if (cursor) {
       let key
       try { key = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) } catch { throw new Error('invalid event cursor') }
       if (!Array.isArray(key) || key.length !== 3 || key[0] !== date || !Number.isSafeInteger(key[1]) || typeof key[2] !== 'string') throw new Error('invalid event cursor')
       after = ' AND (started_at < ? OR (started_at = ? AND id < ?))'; params.push(key[1], key[1], key[2])
     }
-    const rows = this.db.prepare(`SELECT * FROM events WHERE started_at >= ? AND started_at < ?${after}
-      ORDER BY started_at DESC, id DESC LIMIT ?`).all(...params, limit + 1)
+    const rows = this.rows<EventRow>(`SELECT * FROM events WHERE started_at >= ? AND started_at < ?${after}
+      ORDER BY started_at DESC, id DESC LIMIT ?`, ...params, limit + 1)
     const more = rows.length > limit; rows.length = Math.min(rows.length, limit)
     const last = rows.at(-1)
     return { ok: true, date, revision: this.revision,
-      total: this.db.prepare('SELECT COUNT(*) AS n FROM events WHERE started_at >= ? AND started_at < ?').get(start, end).n,
-      records: rows.map((row) => this.hydrate(row)),
-      nextCursor: more ? Buffer.from(JSON.stringify([date, last.started_at, last.id])).toString('base64url') : null }
+      total: this.row<{ n: number }>('SELECT COUNT(*) AS n FROM events WHERE started_at >= ? AND started_at < ?', start, end)!.n,
+      records: rows.map((row) => this.hydrate(row)!),
+      nextCursor: more ? Buffer.from(JSON.stringify([date, last!.started_at, last!.id])).toString('base64url') : null }
   }
-  find({ ids, terms = [], from, to, limit }) {
-    const clauses = []; const params = []
+  find({ ids, terms = [], from, to, limit }: StoredQuery): { total: number; events: StoredSummary[] } {
+    const clauses: string[] = []; const params: SQLInputValue[] = []
     if (ids) {
       if (!ids.length) return { total: 0, events: [] }
       clauses.push(`id IN (${ids.map(() => '?').join(',')})`); params.push(...ids)
@@ -203,11 +216,11 @@ export class JournalStore {
     if (to !== undefined) { clauses.push('started_at <= ?'); params.push(to) }
     for (const term of terms) { clauses.push("instr(lower(activity || ' ' || summary), ?) > 0"); params.push(term) }
     const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : ''
-    const total = this.db.prepare(`SELECT COUNT(*) AS n FROM events${where}`).get(...params).n
-    const events = this.db.prepare(`SELECT * FROM events${where} ORDER BY last_seen_at DESC, id DESC LIMIT ?`).all(...params, limit)
+    const total = this.row<{ n: number }>(`SELECT COUNT(*) AS n FROM events${where}`, ...params)!.n
+    const events = this.rows<EventRow>(`SELECT * FROM events${where} ORDER BY last_seen_at DESC, id DESC LIMIT ?`, ...params, limit)
     return { total, events: events.map((row) => ({ id: row.id, activity: row.activity, summary: row.summary,
       at: row.started_at, lastSeenAt: row.last_seen_at,
-      evidenceCount: this.db.prepare('SELECT COUNT(*) AS n FROM event_observations WHERE event_id=?').get(row.id).n })) }
+      evidenceCount: this.row<{ n: number }>('SELECT COUNT(*) AS n FROM event_observations WHERE event_id=?', row.id)!.n })) }
   }
   close() { if (this.db.isOpen) this.db.close() }
 }

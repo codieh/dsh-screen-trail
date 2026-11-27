@@ -18,10 +18,12 @@ test('npm package contains valid runtime files but no development or local data'
     const top = path.relative(root, source).split(path.sep)[0]
     return !['.git', 'node_modules', 'dist'].includes(top)
   } })
+  // 安装包只携带已编译入口；测试复制本次构建产物，不依赖旧版本的 dist。
+  await cp(path.join(root, 'dist'), path.join(fixture, 'dist'), { recursive: true })
 
   // 注入假数据验证打包边界，不能因干净仓库恰好没有敏感文件就让检查通过。
   for (const file of ['.DS_Store', 'state.json', 'journal.sqlite', 'journal.sqlite-wal', 'journal.sqlite-shm', 'shots/private.jpg', 'diagnostics/request.json',
-    'native/capture-test-cache', 'native/module-cache/cached.swiftmodule']) {
+    'dist/private.sqlite', 'dist/previous-package.tgz', 'native/capture-test-cache', 'native/module-cache/cached.swiftmodule']) {
     const target = path.join(fixture, file)
     await mkdir(path.dirname(target), { recursive: true })
     await writeFile(target, 'package exclusion fixture\n')
@@ -36,8 +38,8 @@ test('npm package contains valid runtime files but no development or local data'
   assert.equal(packed.version, manifest.version)
 
   // 除显式入口外，间接导入、宿主补丁和首次启动要编译的 Swift 源码也必须齐全。
-  for (const file of ['package.json', 'index.js', 'client.js', 'trail.js', 'frames.js',
-    'capture.js', 'analysis-response.js', 'event-tools.js', 'storage.js', 'native/capture.swift', 'cordis.patch.yml',
+  for (const file of ['package.json', 'dist/index.js', 'dist/index.d.ts', 'dist/client.js', 'dist/trail.js', 'dist/frames.js',
+    'dist/capture.js', 'dist/analysis-response.js', 'dist/event-tools.js', 'dist/storage.js', 'native/capture.swift', 'cordis.patch.yml',
     'locale/en.json', 'locale/zh.json', 'icon.svg', 'docs/DETAIL.md', 'docs/DETAIL.zh.md', 'docs/preview.svg']) {
     assert.ok(files.includes(file), `required runtime file missing from package: ${file}`)
   }
@@ -47,14 +49,23 @@ test('npm package contains valid runtime files but no development or local data'
     assert.ok(files.includes(target.replace(/^\.\//, '')), `export target missing from package: ${target}`)
   }
   assert.ok(files.includes(manifest.dsh.bundle.patch.replace(/^\.\//, '')), 'host patch missing from package')
+  assert.ok(files.includes(manifest.types.replace(/^\.\//, '')), 'public type declarations missing from package')
+  assert.ok(files.includes('dist/index.js.map'), 'debug source map missing from package')
+
+  // 检查公开声明可被严格模式消费者使用，而不是仅在项目宽松配置下通过。
+  const consumer = path.join(fixture, 'consumer.ts')
+  await writeFile(consumer, `import type { PluginConfig, EventEdits } from './dist/index.js'\nconst config: PluginConfig = { sampleIntervalSec: 5 }\n// @ts-expect-error public config rejects strings\nconfig.sampleIntervalSec = '5s'\n// @ts-expect-error updates require IDs\nconst edit: EventEdits = { changes: [{ action: 'update' }] }\nvoid [config, edit]\n`)
+  await exec(process.execPath, [path.join(root, 'node_modules/typescript/bin/tsc'), '--ignoreConfig', '--noEmit', '--strict', '--module', 'NodeNext',
+    '--target', 'ES2022', '--skipLibCheck', '--typeRoots', path.join(root, 'node_modules/@types'), consumer], { cwd: fixture })
 
   for (const file of files) {
-    assert.doesNotMatch(file, /(^|\/)(\.DS_Store|\.git|\.github|node_modules|tests|dist|shots|diagnostics)(\/|$)/,
+    assert.doesNotMatch(file, /(^|\/)(\.DS_Store|\.git|\.github|node_modules|tests|src|scripts|type-tests|shots|diagnostics)(\/|$)/,
       `development or local data included in package: ${file}`)
     assert.doesNotMatch(file, /^native\/(capture-[^/]+|module-cache)(\/|$)/,
       `compiled capture cache included in package: ${file}`)
     assert.notEqual(file, 'state.json', 'local state included in package')
     assert.doesNotMatch(file, /\.sqlite(?:-wal|-shm)?$/, 'local database included in package')
+    assert.doesNotMatch(file, /\.tgz$/, 'previous package recursively included')
     if (file.endsWith('.js')) await exec(process.execPath, ['--check', path.join(fixture, file)])
     if (file.endsWith('.json')) JSON.parse(await readFile(path.join(fixture, file), 'utf8'))
   }

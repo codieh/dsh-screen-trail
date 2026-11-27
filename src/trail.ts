@@ -8,6 +8,8 @@ import { MacCapture, SURFACE_MARKER } from './capture.js'
 import { AnalysisResponse } from './analysis-response.js'
 import { registerEventTools, prepareEventChanges } from './event-tools.js'
 import { JournalStore } from './storage.js'
+import type { PluginConfig, RuntimeAdapters, Observation, ModelObservation, ResolvedConfig, Evidence, Activity, ModelActivity, ActivityResult, EventReceipt, EventBatch, EventEdits, CaptureJob, CaptureOutcome, CaptureController, AnalysisRetry, TrailStatus, TrailError, Settings, ModelSettings, Diagnostic, StoreOptions } from './types.js'
+import type { HostContext, AgentHandle, Workspace, NativeAgent, AgentOptions } from './host.js'
 
 const validId = (id) => typeof id === 'string' && /^[A-Za-z0-9-]{4,80}$/.test(id)
 const contextKey = (value) => JSON.stringify([value.bundleId || value.app || '', value.pid || '', value.windowId || '', value.url || value.title || ''])
@@ -21,7 +23,7 @@ function messageDateTime(timestamp) {
   const parts = Object.fromEntries(messageDateFormatter.formatToParts(new Date(timestamp)).map(({ type, value }) => [type, value]))
   return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`
 }
-function integer(name, value, initial, min, max) {
+function integer(name: string, value: unknown, initial: number, min: number, max: number): number {
   if (value === undefined) return initial
   if (!Number.isSafeInteger(Number(value)) || Number(value) < min || Number(value) > max) throw new Error(`${name} must be an integer between ${min} and ${max}`)
   return Number(value)
@@ -53,8 +55,8 @@ export function observationTimeline(batch) {
   return timeline
 }
 
-export function runCommand(command, args) {
-  return new Promise((resolve, reject) => {
+export function runCommand(command: string, args: string[]): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
     const child = spawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'] })
     let output = ''; let detail = ''
     const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error(`${command} timed out`)) }, 20000)
@@ -67,9 +69,9 @@ function cancellation(signal) {
   return signal.reason?.code === 'ANALYSIS_TIMEOUT' ? signal.reason : Object.assign(new Error('analysis cancelled'), { code: 'ANALYSIS_CANCELLED', name: 'AbortError' })
 }
 /** 取消覆盖能力查询、附件准备和流读取，清空后旧任务不能再写回。 */
-async function withSignal(operation, signal) {
+async function withSignal<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
   let onAbort
-  const aborted = new Promise((_, reject) => {
+  const aborted = new Promise<never>((_, reject) => {
     onAbort = () => reject(cancellation(signal)); signal.addEventListener('abort', onAbort, { once: true })
     if (signal.aborted) onAbort()
   })
@@ -82,12 +84,73 @@ function normalize(raw, model) {
     tags: (Array.isArray(raw.tags) ? raw.tags : []).map(text).filter(Boolean) }
 }
 class StateWriteError extends Error {
+  declare name: string;
+  declare message: string;
+  declare stack: string;
+  declare cause: unknown;
+
   constructor(cause, stage = 'state') { super(`${stage} persistence failed: ${cause.message || cause}`, { cause }); this.name = 'StateWriteError' }
 }
-const evidence = (item) => ({ id: item.id, imageId: item.imageId, at: item.at, lastSeenAt: item.lastSeenAt, context: item.context })
+const evidence = (item: Evidence): Evidence => ({ id: item.id, imageId: item.imageId, at: item.at, lastSeenAt: item.lastSeenAt, context: item.context })
 
 export class ScreenTrail {
-  constructor(ctx, config = {}, runtime = {}) {
+  declare ctx: HostContext;
+  declare io: typeof fs;
+  declare run: NonNullable<RuntimeAdapters['run']>;
+  declare now: () => number;
+  declare uuid: () => string;
+  declare setTimer: typeof setTimeout;
+  declare clearTimer: typeof clearTimeout;
+  declare root: string;
+  declare shots: string;
+  declare legacyStateFile: string;
+  declare databaseFile: string;
+  declare diagnosticsDir: string;
+  declare createStore: (file: string, options: StoreOptions) => JournalStore;
+  declare settings: ResolvedConfig;
+  declare records: Observation[];
+  declare selector: SimpleSelector;
+  declare captureQueue: CaptureJob[];
+  declare protectedImages: Set<string>;
+  declare activeIds: Set<string>;
+  declare analysisSessionId: string | null;
+  declare analysisHandle: AgentHandle | null;
+  declare analysisWorkspace: Workspace | null;
+  declare hasModelSettings: boolean;
+  declare eventBatches: Map<string, EventBatch>;
+  declare eventToolCalls: Map<string, EventBatch>;
+  declare eventToolDisposers: Array<() => void>;
+  declare writes: Promise<unknown>;
+  declare diagnosticWrites: Promise<void>;
+  declare imageWrites: Promise<void>;
+  declare running: boolean;
+  declare analysisEnabled: boolean;
+  declare loaded: boolean;
+  declare disposed: boolean;
+  declare generation: number;
+  declare analysisVersion: number;
+  declare diagnosticEpoch: number;
+  declare sampleTask: Promise<void> | null;
+  declare analysisTask: Promise<void> | null;
+  declare resumeTask: { epoch: number; task: Promise<void> } | null;
+  declare analysisTimer: ReturnType<typeof setTimeout> | null;
+  declare controller: AbortController | null;
+  declare lastModelCallAt: number | null;
+  declare captureRetryTimer: ReturnType<typeof setTimeout> | null;
+  declare captureFailures: number;
+  declare captureRetryAt: number | null;
+  declare analysisRetry: AnalysisRetry | null;
+  declare capturePaused: boolean;
+  declare capturePauseReason: string;
+  declare lastPersistAt: number;
+  declare status: TrailStatus;
+  declare captureSource: CaptureController;
+  declare ready: Promise<boolean>;
+  declare captureRecoveryError: string | null;
+  declare store: JournalStore;
+  declare analysisRecoveryError: string | null;
+
+  constructor(ctx: HostContext, config: PluginConfig = {}, runtime: RuntimeAdapters = {}) {
     this.ctx = ctx; this.io = runtime.fs || fs; this.run = runtime.run || runCommand
     this.now = runtime.now || Date.now; this.uuid = runtime.uuid || randomUUID
     this.setTimer = runtime.setTimer || setTimeout; this.clearTimer = runtime.clearTimer || clearTimeout
@@ -121,11 +184,11 @@ export class ScreenTrail {
     this.ready = this.load().catch((error) => { this.fail('initialize', error, true); return false })
     if (config.autoStart === true) void this.ready.then((ready) => ready && this.start()).catch((error) => this.fail('start', error, true))
   }
-  log(event, details = {}) {
+  log(event: string, details: object = {}): void {
     const message = `[screen-trail] ${JSON.stringify({ at: this.now(), event, ...details })}`
     if (this.ctx.logger?.info) this.ctx.logger.info(message); else console.info(message)
   }
-  fail(stage, error, fatal = false) {
+  fail(stage: string, error: TrailError, fatal = false): void {
     this.status.lastError = `${stage}: ${error?.message || String(error)}`
     if (/screen recording|not permitted|tcc/i.test(error?.message || '')) this.status.permission = 'denied'
     const message = `[screen-trail] ${JSON.stringify({ at: this.now(), event: 'error', stage, message: this.status.lastError, domain: error?.domain, code: error?.code, stack: error?.stack })}`
@@ -137,7 +200,7 @@ export class ScreenTrail {
       this.scheduleCaptureRetry()
     }
   }
-  captureFailed(stage, error) {
+  captureFailed(stage: string, error: TrailError): void {
     if (error.name === 'AbortError' || this.disposed) return
     this.fail(stage, error)
     this.captureRecoveryError = this.status.lastError
@@ -210,7 +273,7 @@ export class ScreenTrail {
     let text
     try { text = await this.io.readFile(this.legacyStateFile, 'utf8') } catch (error) { if (error.code !== 'ENOENT') throw error }
     if (text !== undefined) {
-      const old = JSON.parse(text); const settings = {}
+      const old = JSON.parse(text); const settings: Partial<Settings> = {}
       if (old.sampleIntervalSec !== undefined) settings.sampleIntervalSec = integer('sampleIntervalSec', old.sampleIntervalSec, 5, 1, Number.MAX_SAFE_INTEGER)
       if (old.modelSettings !== undefined) settings.modelSettings = this.validateModelSettings(old.modelSettings)
       // 用户选择不迁移历史；旧会话仍由宿主保留，但新库不再复用旧事件 ID 的上下文。
@@ -233,24 +296,24 @@ export class ScreenTrail {
     }).catch((error) => { throw new StateWriteError(error) })
     this.writes = operation.catch((error) => this.fail('state.write', error, true)); return operation
   }
-  persistedSettings() {
+  persistedSettings(): Partial<Settings> {
     return { analysisSessionId: this.analysisSessionId, analysisRetry: this.analysisRetry, sampleIntervalSec: this.settings.sampleIntervalSec, analysisWindowSec: this.settings.analysisWindowSec,
       ...(this.hasModelSettings ? { modelSettings: this.modelSettings() } : {}) }
   }
-  modelSettings() {
+  modelSettings(): ModelSettings {
     const host = this.ctx.agentDefaultModel.currentSelection()
     const configured = Boolean(this.settings.provider || this.settings.model)
     return { provider: configured ? this.settings.provider || host?.provider || '' : '', model: configured ? this.settings.model || host?.model || '' : '',
       reasoningEffort: this.settings.analysisReasoningEffort ?? null }
   }
-  validateModelSettings(value) {
+  validateModelSettings(value: ModelSettings): ModelSettings {
     if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.provider !== 'string' || typeof value.model !== 'string'
       || Boolean(value.provider.trim()) !== Boolean(value.model.trim())
       || (value.reasoningEffort !== null && (typeof value.reasoningEffort !== 'string' || !value.reasoningEffort.trim()))) throw new Error('invalid model settings: provide both provider and model, or leave both empty; reasoningEffort must be an ID or null')
     return { provider: value.provider.trim(), model: value.model.trim(), reasoningEffort: value.reasoningEffort?.trim() ?? null }
   }
   async modelCatalog() {
-    const models = []
+    const models: Array<{ provider: string; model: string; name?: string; providerName?: string }> = []
     for (const provider of this.ctx.llm.listProviders()) {
       for (const model of await this.ctx.llm.listModels(provider.id)) {
         if (model.inputModalities && !model.inputModalities.includes('image')) continue
@@ -289,14 +352,14 @@ export class ScreenTrail {
     this.writes = operation.catch((error) => this.fail('model_settings.persist', error, true))
     return operation
   }
-  async commitEventBatch(args, context) {
+  async commitEventBatch(args: EventEdits, context: EventBatch): Promise<EventReceipt> {
     const operation = this.writes.then(async () => {
       context.signal.throwIfAborted()
       if ((context.batch.length && context.version !== this.analysisVersion) || this.disposed) throw Object.assign(new Error('analysis batch changed before commit'), { code: 'EVENT_BATCH_CHANGED' })
       const prepared = prepareEventChanges(this, args, context.selected, context.model)
       const batchIds = new Set(context.batch.map((item) => item.id))
       // 本轮可能继续引用图片，先标记已提交但保留候选，整轮结束后再统一回收。
-      const records = this.records.map((item) => batchIds.has(item.id)
+      const records: Observation[] = this.records.map((item) => batchIds.has(item.id)
         ? { ...item, analysisStatus: 'complete', analysisError: null, selectedForAnalysis: context.selected.some((frame) => frame.id === item.id) } : item)
       try {
         context.signal.throwIfAborted()
@@ -457,7 +520,7 @@ export class ScreenTrail {
     // 与观察一起提交结束时间；静止画面也必须触发写入，否则事件时间会停留在初次截图。
     return this.persist()
   }
-  enqueue(frame, manual = false) {
+  enqueue(frame, manual = false): Promise<CaptureOutcome> {
     if (this.disposed || (!this.running && !manual)) return Promise.resolve({ cancelled: true })
     if (frame.context.title?.includes(SURFACE_MARKER)) {
       this.presence({ type: 'excluded', at: frame.at, context: frame.context })
@@ -477,7 +540,7 @@ export class ScreenTrail {
       this.captureQueue.splice(this.captureQueue.indexOf(previous), 1); previous.resolve({ coalesced: true }); this.status.coalesced += 1
       this.log('frame.coalesced', { at: previous.frame.at, replacementAt: frame.at })
     }
-    const operation = new Promise((resolve, reject) => this.captureQueue.push({ frame, manual, epoch: this.generation, resolve, reject }))
+    const operation = new Promise<CaptureOutcome>((resolve, reject) => this.captureQueue.push({ frame, manual, epoch: this.generation, resolve, reject }))
     this.pumpCapture(); return operation
   }
   pumpCapture() {
@@ -493,7 +556,7 @@ export class ScreenTrail {
       }
     })().finally(() => { this.sampleTask = null; if (this.captureQueue.length) this.pumpCapture() })
   }
-  async capture(job) {
+  async capture(job: CaptureJob): Promise<CaptureOutcome> {
     if (this.unfinishedCount() >= this.pendingCapacity()) { this.holdCapture(); this.pumpAnalysis(); return { cancelled: true } }
     const frame = job.frame
     this.status.captures += 1; this.status.lastCaptureAt = frame.at; this.status.selfExcluded = false
@@ -514,7 +577,7 @@ export class ScreenTrail {
         })
       }
       if (job.epoch !== this.generation || this.disposed) return { cancelled: true }
-      const record = { id: `${frame.at.toString(36)}-${this.uuid().slice(0, 8)}`, at: frame.at, lastSeenAt: frame.at,
+      const record: Observation = { id: `${frame.at.toString(36)}-${this.uuid().slice(0, 8)}`, at: frame.at, lastSeenAt: frame.at,
         imageId: frame.imageId, bytes: frame.jpeg.length, context: frame.context, reason: decision.reason, score: decision.score,
         imageReused: existing, analysisStatus: 'pending', analysisError: null }
       this.records.unshift(record); this.status.keyframes += 1; if (existing) this.status.reusedImages += 1
@@ -616,8 +679,8 @@ export class ScreenTrail {
       this.pumpAnalysis()
     })
   }
-  readActivities(raw, selected, saved, model) {
-    const activities = []; const used = new Set(); const claimed = new Set()
+  readActivities(raw: { activities: ModelActivity[] }, selected: Evidence[], saved: Activity[], model: string): ActivityResult {
+    const activities: ActivityResult['activities'] = []; const used = new Set<string>(); const claimed = new Set<string>()
     if (!Array.isArray(raw?.activities)) throw new Error('analysis reply must contain an activities array')
     const groups = raw.activities
     const byId = new Map(saved.map((activity) => [activity.id, activity]))
@@ -648,8 +711,8 @@ export class ScreenTrail {
     if (ignoredObservationIds.length) this.log('analysis.partial', { acceptedActivities: activities.length, unusedImages: ignoredObservationIds.length })
     return { activities, ignoredObservationIds }
   }
-  applyActivities(result, selected) {
-    const receipts = []
+  applyActivities(result: ActivityResult, selected: Evidence[]): EventReceipt['events'] {
+    const receipts: EventReceipt['events'] = []
     const byId = new Map(selected.map((item) => [item.id, item]))
     const ordered = [...result.activities].sort((a, b) => Math.min(...a.observationIds.map((id) => byId.get(id).at)) - Math.min(...b.observationIds.map((id) => byId.get(id).at)))
     for (const change of ordered) {
@@ -663,7 +726,7 @@ export class ScreenTrail {
       })
       const created = !item
       if (!item) {
-        item = { id: `activity-${frames[0].at.toString(36)}-${this.uuid().slice(0, 8)}`, at: frames[0].at, lastSeenAt: frames.at(-1).lastSeenAt, evidence: [], reason: 'activity' }
+        item = { id: `activity-${frames[0].at.toString(36)}-${this.uuid().slice(0, 8)}`, at: frames[0].at, lastSeenAt: frames.at(-1).lastSeenAt, evidence: [], reason: 'activity' } as Activity
         this.activities.unshift(item)
       }
       const joined = [...new Map([...item.evidence, ...merged.flatMap((source) => source.evidence), ...frames].map((frame) => [frame.id, frame])).values()].sort((a, b) => a.at - b.at)
@@ -687,7 +750,7 @@ export class ScreenTrail {
     if (result.ignoredObservationIds.length) this.log('activity.ignored', { ids: result.ignoredObservationIds })
     return receipts
   }
-  async analysisAgent(options, signal) {
+  async analysisAgent(options: AgentOptions, signal: AbortSignal): Promise<NativeAgent> {
     const presets = this.ctx.agentPresets
     let presetId
     let agent = this.analysisSessionId && this.ctx.agents.get(this.analysisSessionId)
@@ -750,7 +813,7 @@ export class ScreenTrail {
       ...(options.reasoningEffort === undefined ? {} : { reasoningEffort: options.reasoningEffort }) })
     return agent
   }
-  analysisContext(agent, expectedPreset) {
+  analysisContext(agent: NativeAgent, expectedPreset?: string) {
     const presets = this.ctx.agentPresets
     const agentPreset = presets.composedPreset(agent.ctx) ?? null
     // compaction 位于预设隔离组，agent.ctx.get('compaction') 读不到该服务。
@@ -837,7 +900,7 @@ export class ScreenTrail {
       for (const dispose of cleanup.reverse()) dispose()
     }
   }
-  async analyze(batch, selected, signal) {
+  async analyze(batch: Observation[], selected: Observation[], signal: AbortSignal) {
     const selection = this.selection(); this.status.selection = selection
     const configuredReasoningEffort = this.settings.analysisReasoningEffort
     const requestId = `${this.now().toString(36)}-${this.uuid().slice(0, 8)}`; const diagnosticEpoch = this.diagnosticEpoch
@@ -845,7 +908,7 @@ export class ScreenTrail {
     let reasoningEffort; let adapterDefaultEffort; let decisions; let input; let errorCode = null; let errorMessage = null
     let context = { agentPreset: null, compactionAvailable: false, compactionAuto: null }; let contextBefore; let contextAfter
     const compactions = []
-    const tools = { signal, requestId, batch, selected, version: this.analysisVersion, model: `${selection.provider}/${selection.model}`, active: false, calls: [], receipt: null, result: null }
+    const tools: EventBatch = { signal, requestId, batch, selected, version: this.analysisVersion, model: `${selection.provider}/${selection.model}`, active: false, calls: [], receipt: null, result: null }
     try {
       if (signal.aborted) throw cancellation(signal)
       const info = await this.ctx.llm.resolveModelInfo(selection.provider, selection.model, signal)
@@ -859,7 +922,7 @@ export class ScreenTrail {
       const language = this.settings.locale === 'zh' ? 'Write human-readable strings in Simplified Chinese.' : this.settings.locale === 'en' ? 'Write human-readable strings in English.' : 'Use the dominant language of the observed content.'
       const retryNotice = this.analysisRetry ? '\nAutomatic retry of the same observation batch. Continue from existing conversation/tool results; do not repeat completed operations.' : ''
       input = { system: prompt, text: `${language}${retryNotice}\nAnalysis time: ${messageDateTime(this.now())}\nObservations in time order: ${JSON.stringify(observations)}` }
-      const content = [{ type: 'text', text: input.text }]
+      const content: Array<{ type: 'text'; text: string } | { type: 'image'; attachment: unknown }> = [{ type: 'text', text: input.text }]
       for (const imageId of new Set(selected.map((item) => item.imageId))) {
         const data = await this.io.readFile(path.join(this.shots, `${imageId}.jpg`))
         if (signal.aborted) throw cancellation(signal)
@@ -900,7 +963,7 @@ export class ScreenTrail {
       this.log('analysis.finished', diagnostic); await this.saveDiagnostic(diagnostic, response.text(), diagnosticEpoch, input)
     }
   }
-  saveDiagnostic(diagnostic, reply, epoch, input) {
+  saveDiagnostic(diagnostic: Diagnostic, reply: string | undefined, epoch: number, input?: { system: string; text: string }) {
     const file = path.join(this.diagnosticsDir, `${diagnostic.requestId}.json`)
     // 完整请求与回复只写本地诊断文件，避免膨胀轮询状态或把窗口内容写入普通日志。
     const payload = JSON.stringify({ ...diagnostic, input, ...(reply === undefined ? {} : { reply }) }, null, 2)
@@ -914,7 +977,7 @@ export class ScreenTrail {
     })
     this.diagnosticWrites = operation.catch((error) => this.fail('diagnostics.write', error, true)); return operation
   }
-  queueImages(task) {
+  queueImages(task: () => Promise<void>): Promise<void> {
     // 图像写入与回收共用串行队列，避免分析清理时删掉正在提交的截图。
     const operation = this.imageWrites.then(task).catch((error) => { throw new StateWriteError(error, 'image') })
     this.imageWrites = operation.catch((error) => this.fail('images.write', error, true))

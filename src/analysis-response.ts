@@ -1,5 +1,12 @@
 /** 按宿主的分块协议组装文本，保留终止原因，不能把截断误当成正常结束。 */
+import type { StreamChunk, FinishReason, TokenUsage } from './types.js'
 export class AnalysisResponse {
+  declare blocks: Map<number, string>;
+  declare finish: FinishReason | null;
+  declare usage: TokenUsage | null;
+  declare reasoningCharacters: number;
+  declare chunks: number;
+
   constructor() {
     this.blocks = new Map()
     this.finish = null
@@ -8,7 +15,7 @@ export class AnalysisResponse {
     this.chunks = 0
   }
 
-  push(chunk) {
+  push(chunk: StreamChunk): void {
     this.chunks += 1
     if (this.finish) throw Object.assign(new Error('model emitted data after its terminal finish'), { code: 'STREAM_PROTOCOL' })
     if (chunk.type === 'text-delta') {
@@ -23,7 +30,7 @@ export class AnalysisResponse {
     } else if (chunk.type === 'reasoning-delta') {
       this.reasoningCharacters += chunk.text.length
     } else if (chunk.type === 'usage') {
-      this.usage = Object.fromEntries(['inputTokens', 'outputTokens', 'totalTokens', 'reasoningTokens', 'cacheReadTokens', 'cacheWriteTokens']
+      this.usage = Object.fromEntries((['inputTokens', 'outputTokens', 'totalTokens', 'reasoningTokens', 'cacheReadTokens', 'cacheWriteTokens'] as const)
         .filter((key) => Number.isFinite(chunk.usage?.[key])).map((key) => [key, chunk.usage[key]]))
     } else if (chunk.type === 'finish') {
       if (typeof chunk.reason?.kind !== 'string') throw new Error('model finish reason is missing')
@@ -35,7 +42,7 @@ export class AnalysisResponse {
     return [...this.blocks].sort(([a], [b]) => a - b).map(([, text]) => text).join('')
   }
 
-  assertComplete(maxTokens) {
+  assertComplete(maxTokens: number): void {
     let code
     let message
     if (!this.finish) {

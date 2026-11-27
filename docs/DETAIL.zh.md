@@ -112,6 +112,14 @@ autoStart: false
 
 开发验证：`npm test`。测试使用模拟屏幕和模型回复，覆盖采样、选图、事件工具、SQLite 事务、日期分页、资源清理及宿主会话接口；不调用真实云端模型或实际录屏。
 
+## TypeScript 开发
+
+沿用 `codex/typescript-refactor` 分支的 `src/`、`dist/` 和宿主接口分层，补齐 0.7.1 的 SQLite、事件工具、日期 Tab 与自动恢复。`npm ci` 安装构建依赖，`npm run build` 清理并生成 JavaScript、类型声明及源码映射；公开导出名称不变，宿主继续执行 JavaScript。Swift 源码仍位于 `native/`，编译后的采集模块从该目录读取辅助程序源码。
+
+`npm run typecheck` 检查全部 TS 源码，并对选图、流组装、SQLite 和编译期契约使用严格检查。配置、采集帧、观察、事件、数据库设置、重试批次和前端状态具有明确类型；宿主的开放事件与 JSON 工具输入保留动态边界和原有运行时校验。宿主协调与界面模块沿用原分支的非严格编译设置。测试保留为 JavaScript，执行 `dist/` 的实际构建产物。
+
+`npm test` 和 `npm pack` 会先构建。使用 `npm pack --ignore-scripts` 时应先执行 `npm run build`。安装包只包含编译后的运行模块、类型声明、源码映射和原生资源，不包含开发依赖、测试、数据库或旧安装包。
+
 ## CI
 
-推送、Pull Request 或手动触发时，在 Node.js 24 + Apple 芯片 macOS 15 上运行单元与打包边界检查、Swift 编译和原生无录屏自测，然后生成可下载的安装包。检查失败会阻止后续步骤，测试报告在失败时也上传。
+推送、Pull Request 或手动触发时，在 Node.js 24 + Apple 芯片 macOS 15 上安装锁定的构建依赖，执行类型检查、构建、单元与打包边界检查、Swift 编译和原生无录屏自测，然后生成可下载的安装包。检查失败会阻止后续步骤，测试报告在失败时也上传。

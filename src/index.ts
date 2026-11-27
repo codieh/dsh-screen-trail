@@ -1,16 +1,22 @@
 import { ScreenTrail } from './trail.js'
+import type { HostContext } from './host.js'
+import type { PluginConfig } from './types.js'
+import type { IncomingMessage, ServerResponse, RequestListener } from 'node:http'
+interface ControlRequest { action?: string; id?: string; intervalSec?: unknown; settings?: import('./types.js').ModelSettings; permission?: string }
+export type * from './types.js'
+export type { HostContext, NativeAgent } from './host.js'
 
 export const inject = ['llm', 'webServer', 'attachments', 'agentDefaultModel', 'timer', 'agents', 'sessions', 'sessionPersistence', 'sessionQuery', 'sessionTitle', 'workingDirectory', 'workspaceRegistry', 'agentPresets', 'tokenMeter', 'tools']
 const prefix = '/screen-trail/api'
 
-function send(response, status, value) {
+function send(response: ServerResponse, status: number, value: unknown): void {
   const body = JSON.stringify(value)
   response.writeHead(status, { 'cache-control': 'no-store', 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(body) })
   response.end(body)
 }
 
 /** 插件接口独立于宿主登录门禁，同时检查连接、Host 与修改请求的来源。 */
-function admit(request, response, mutation = false) {
+function admit(request: IncomingMessage, response: ServerResponse, mutation = false): boolean {
   const host = String(request.headers.host || '')
   const name = host.startsWith('[') ? host.slice(1, host.indexOf(']')) : host.split(':')[0]
   const peer = request.socket?.remoteAddress
@@ -24,8 +30,8 @@ function admit(request, response, mutation = false) {
   return false
 }
 
-function readJson(request) {
-  return new Promise((resolve, reject) => {
+function readJson(request: IncomingMessage): Promise<ControlRequest> {
+  return new Promise<ControlRequest>((resolve, reject) => {
     const chunks = []
     let bytes = 0
     request.on('data', (chunk) => {
@@ -44,13 +50,13 @@ function readJson(request) {
   })
 }
 
-export function apply(ctx, config = {}) {
+export function apply(ctx: HostContext, config: PluginConfig = {}) {
   const trail = new ScreenTrail(ctx, config)
   registerRoutes(ctx, trail)
 }
 
-export function registerRoutes(ctx, trail) {
-  const register = (path, handler) => ctx.effect(() => {
+export function registerRoutes(ctx: HostContext, trail: ScreenTrail) {
+  const register = (path: string, handler: RequestListener) => ctx.effect(() => {
     const dispose = ctx.webServer.register({ kind: 'exact', path: `${prefix}/${path}`, handler })
     return () => { if (typeof dispose === 'function') dispose() }
   })
@@ -76,7 +82,7 @@ export function registerRoutes(ctx, trail) {
   register('control', async (request, response) => {
     if (!admit(request, response, true)) return
     if (request.method !== 'POST') { send(response, 405, { ok: false, error: 'method not allowed' }); return }
-    let body
+    let body: ControlRequest
     try { body = await readJson(request) } catch (error) { send(response, 400, { ok: false, error: error.message }); return }
     try {
       await trail.assertReady()

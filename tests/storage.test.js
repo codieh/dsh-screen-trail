@@ -4,9 +4,9 @@ import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
-import { JournalStore, dayBounds } from '../storage.js'
+import { JournalStore, dayBounds } from '../dist/storage.js'
 import { createHost } from './harness.js'
-import { ScreenTrail } from '../trail.js'
+import { ScreenTrail } from '../dist/trail.js'
 
 function event(id, at, end = at) {
   const frame = { id: `frame-${id}`, imageId: `image-${id}`, at, lastSeenAt: end, context: { app: 'Editor', title: id } }

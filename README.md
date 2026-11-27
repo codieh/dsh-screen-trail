@@ -20,6 +20,8 @@
 
 需要 macOS、DeepSeek Harness 和本机 Swift 编译器；宿主需运行在 Node.js 24 或更新版本，并配置支持图片输入的模型。Swift 编译器用于首次使用时编译采集辅助程序，无需另装 Screenpipe、FFmpeg 或数据库服务。
 
+从源码目录安装前，在仓库中执行 `npm ci` 和 `npm run build`，生成宿主加载的 JavaScript。
+
 ### 桌面端
 
 1. 将本仓库下载或克隆到本机。
@@ -72,10 +74,14 @@ dsh plugin --profile web add /absolute/path/dsh-screen-trail
 - [中文详细说明](docs/DETAIL.zh.md)：采集与选图规则、完整配置、上下文管理和错误诊断。
 - [English Details](docs/DETAIL.md)
 
-运行本地测试：
+本分支沿用 TypeScript 结构，源码位于 `src/`，宿主加载 `dist/` 中编译后的 JavaScript。构建同时生成类型声明与源码映射；运行插件不需要 TypeScript 依赖，源码开发与构建需要安装开发依赖。
+
+运行类型检查与本地测试：
 
 ```sh
+npm ci
+npm run typecheck
 npm test
 ```
 
-测试使用模拟屏幕和模型，不调用真实云端模型或实际录屏。需要分发本地安装包时，在仓库目录运行 `npm pack --ignore-scripts`。
+测试使用模拟屏幕和模型，不调用真实云端模型或实际录屏。`npm test` 会先构建再测试编译产物；需要分发时运行 `npm pack`，同样会自动构建。使用 `npm pack --ignore-scripts` 时请先执行 `npm run build`。
