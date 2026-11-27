@@ -80,6 +80,12 @@ The panel provides model and reasoning selectors with explicit Save. Models come
 
 Run `npm test`. Tests use simulated screens and model responses to cover sampling, selection, event tools, SQLite transactions, date paging, resource cleanup and host-session interfaces. They do not call cloud models or record the screen.
 
+## Remote Installation
+
+In desktop Harness, choose Add plugin and enter `https://github.com/codieh/dsh-screen-trail`. No manual clone or TypeScript build is needed. Git installation downloads the repository, installs build dependencies and runs the existing prepack/build scripts to produce dist/. If Harness shows Install scripts need permission, review the package and choose Allow these scripts and retry only if you trust it.
+
+For dsh web, run `dsh plugin --profile web add github:codieh/dsh-screen-trail`. If pnpm reports ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED, merge the exact package key from that error into allowBuilds in the indicated profile's pnpm-workspace.yaml, then retry. Do not disable script approval globally. See README for local development and prebuilt .tgz installation. Installation does not start recording.
+
 ## TypeScript Development
 
 This branch extends the existing src/dist layout with the current SQLite store, event tools, date tabs and automatic recovery. Run npm ci and npm run build before loading a local checkout. Builds emit JavaScript, declarations and source maps; public export names remain unchanged. The capture module resolves the Swift source from the package's native/ directory.

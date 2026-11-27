@@ -20,26 +20,51 @@
 
 需要 macOS、DeepSeek Harness 和本机 Swift 编译器；宿主需运行在 Node.js 24 或更新版本，并配置支持图片输入的模型。Swift 编译器用于首次使用时编译采集辅助程序，无需另装 Screenpipe、FFmpeg 或数据库服务。
 
-从源码目录安装前，在仓库中执行 `npm ci` 和 `npm run build`，生成宿主加载的 JavaScript。
+### 从 GitHub 安装（推荐）
 
-### 桌面端
+无需先下载或 clone 仓库。
 
-1. 将本仓库下载或克隆到本机。
-2. 打开 Harness 的插件管理页，选择 **添加插件（Add plugin）**。
-3. 输入仓库目录的**绝对路径**并安装，例如 `/absolute/path/dsh-screen-trail`。
-4. 按宿主提示重新加载或重启，然后打开侧栏的 **屏幕纪事**。
+1. 打开桌面端 Harness 的插件管理页，选择 **添加插件（Add plugin）**。
+2. 输入以下仓库地址并安装：
 
-本地目录需保留，后续运行会读取其中的插件文件。
-
-### dsh web
-
-在终端将本地仓库添加到对应 profile：
-
-```sh
-dsh plugin --profile web add /absolute/path/dsh-screen-trail
+```text
+https://github.com/codieh/dsh-screen-trail
 ```
 
-将路径替换为实际仓库位置；使用自定义 profile 时，将 `web` 替换为对应名称。安装后重启 `dsh web` 并刷新页面。桌面端请通过应用内的插件管理器安装，避免装进另一个 profile。
+3. 如果出现 **需要允许安装脚本**，确认列表中的 `@local/dsh-screen-trail` 属于本项目后，点击 **允许这些脚本并重试**。
+4. 等待下载与 TypeScript 构建完成，按宿主提示重新加载或重启，打开侧栏的 **屏幕纪事**。
+
+GitHub 安装会在安装过程中生成 `dist/`，无需手动运行 `npm ci` 或构建。构建脚本以当前用户权限执行，只允许你信任的包；不要全局关闭脚本审批。这里使用仓库地址，不是从 npm 注册表安装 `@local/dsh-screen-trail`。
+
+### dsh web 从 GitHub 安装
+
+```sh
+dsh plugin --profile web add github:codieh/dsh-screen-trail
+```
+
+使用自定义 profile 时，将 `web` 替换为对应名称。若终端报告 `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`，在报错指向的 profile 的 `pnpm-workspace.yaml` 中，为**报错列出的具体包**添加 `allowBuilds`，保留文件内已有配置，然后重新执行安装命令。例如：
+
+```yaml
+allowBuilds:
+  '@local/dsh-screen-trail': true
+```
+
+安装后重启 `dsh web` 并刷新页面。桌面端请通过应用内的插件管理器安装，避免装进另一个 profile。
+
+### 本地源码安装（开发用）
+
+```sh
+git clone https://github.com/codieh/dsh-screen-trail.git
+cd dsh-screen-trail
+npm ci
+npm run build
+```
+
+然后在桌面端 **添加插件** 中输入仓库目录的绝对路径；`dsh web` 可执行 `dsh plugin --profile web add /absolute/path/dsh-screen-trail`。安装后按宿主提示重新加载，本地目录需保留。修改 `src/` 后重新运行 `npm run build`。
+
+### 安装已构建的压缩包
+
+也可从本仓库 [GitHub Actions](https://github.com/codieh/dsh-screen-trail/actions/workflows/ci.yml) 的成功运行中下载 `screen-trail-package` 产物，解开下载的外层 ZIP，得到 `.tgz` 文件。在 **添加插件** 中输入该 `.tgz` 的绝对路径即可，无需本地编译 TypeScript。GitHub 下载 Actions 产物可能要求登录；不要把仓库的 Source code ZIP 当作插件安装包。
 
 ## 开始使用
 
