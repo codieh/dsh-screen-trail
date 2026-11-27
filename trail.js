@@ -13,6 +13,7 @@ const validId = (id) => typeof id === 'string' && /^[A-Za-z0-9-]{4,80}$/.test(id
 const contextKey = (value) => JSON.stringify([value.bundleId || value.app || '', value.pid || '', value.windowId || '', value.url || value.title || ''])
 const ANALYSIS_TIMEOUT_MS = 90000
 const SESSION_IDLE_MS = 8 * 60 * 60 * 1000
+const recoveryDelay = (attempt) => Math.min(60000, 1000 * 2 ** Math.min(attempt - 1, 6))
 const messageDateFormatter = new Intl.DateTimeFormat('en', { timeZone: 'Asia/Taipei',
   year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' })
 /** 仅格式化发送给模型的时间，本地存储、排序和时长计算仍使用毫秒时间戳。 */
@@ -107,12 +108,14 @@ export class ScreenTrail {
     this.generation = 0; this.analysisVersion = 0; this.diagnosticEpoch = 0
     this.sampleTask = null; this.analysisTask = null; this.resumeTask = null
     this.analysisTimer = null; this.controller = null; this.lastModelCallAt = null
+    this.captureRetryTimer = null; this.captureFailures = 0; this.captureRetryAt = null; this.analysisRetry = null
     this.capturePaused = false; this.capturePauseReason = null; this.lastPersistAt = 0
     this.status = { permission: 'unknown', lastError: null, captures: 0, keyframes: 0, analyses: 0, modelCalls: 0, reusedImages: 0, extended: 0,
       skipped: 0, excluded: 0, coalesced: 0, ignored: 0, selfExcluded: false, lastCaptureAt: null, lastAnalysisAt: null, selection: null, lastAnalysis: null }
     this.captureSource = (runtime.createCapture || ((options) => new MacCapture(options)))({ root: this.root, maxDimension: this.settings.maxDimension, sampleIntervalSec: this.settings.sampleIntervalSec,
-      log: (event, data) => this.log(event, data), onFrame: (frame) => { void this.enqueue(frame).catch((error) => this.fail('capture', error, true)) },
-      onPresence: (message) => this.presence(message), onError: (error) => this.fail('capture.native', error, true) })
+      log: (event, data) => this.log(event, data), onFrame: (frame) => {
+        void this.enqueue(frame).then((result) => { if (!result?.cancelled) this.confirmCapture() }).catch((error) => this.captureFailed('capture', error))
+      }, onPresence: (message) => this.presence(message), onError: (error) => this.captureFailed('capture.native', error) })
     if (config.eventsEnabled !== undefined || config.analysisIntervalSec !== undefined) this.log('config.migrated', {
       sampleIntervalSec: this.settings.sampleIntervalSec, analysisWindowSec: this.settings.analysisWindowSec, retired: ['eventsEnabled', 'analysisIntervalSec', 'motionIntervalSec', 'intervalSec'] })
     this.ready = this.load().catch((error) => { this.fail('initialize', error, true); return false })
@@ -127,7 +130,48 @@ export class ScreenTrail {
     if (/screen recording|not permitted|tcc/i.test(error?.message || '')) this.status.permission = 'denied'
     const message = `[screen-trail] ${JSON.stringify({ at: this.now(), event: 'error', stage, message: this.status.lastError, domain: error?.domain, code: error?.code, stack: error?.stack })}`
     if (this.ctx.logger?.error) this.ctx.logger.error(message); else console.error(message)
-    if (fatal) this.pause()
+    // 故障不能撤销用户的运行意图；主动暂停才会关闭 running / analysisEnabled。
+    if (fatal && this.loaded && !this.disposed) {
+      this.captureRecoveryError = this.status.lastError
+      this.stopCapture(`blocked: ${stage}`)
+      this.scheduleCaptureRetry()
+    }
+  }
+  captureFailed(stage, error) {
+    if (error.name === 'AbortError' || this.disposed) return
+    this.fail(stage, error)
+    this.captureRecoveryError = this.status.lastError
+    // 系统的“停止共享”也是用户主动停止，不能反过来自动重新录屏。
+    if (error.domain === 'com.apple.ScreenCaptureKit.SCStreamErrorDomain' && error.code === -3817) { this.pause(); return }
+    if (this.captureRetryTimer !== null) return
+    this.stopCapture(stage); this.scheduleCaptureRetry()
+  }
+  scheduleCaptureRetry() {
+    if (!this.running || this.disposed || this.captureRetryTimer !== null) return
+    this.capturePaused = false; this.capturePauseReason = 'recovery'
+    const attempt = ++this.captureFailures; const delayMs = recoveryDelay(attempt)
+    this.captureRetryAt = this.now() + delayMs
+    this.log('capture.retry_scheduled', { attempt, delayMs })
+    this.captureRetryTimer = this.setTimer(() => {
+      this.captureRetryTimer = null; this.captureRetryAt = null
+      const epoch = this.generation
+      void (async () => {
+        await this.sampleTask
+        if (!this.running || this.disposed || epoch !== this.generation) return
+        await this.persist()
+        if (!this.running || this.disposed || epoch !== this.generation) return
+        await this.resumeCapture()
+      })().catch((error) => {
+        if (epoch === this.generation) this.captureFailed('capture.recovery', error)
+      })
+    }, delayMs)
+  }
+  confirmCapture() {
+    if (!this.running || this.captureSource.state !== 'ready') return
+    if (this.captureFailures) this.log('capture.recovery_completed', { attempts: this.captureFailures })
+    if (this.status.lastError === this.captureRecoveryError) this.status.lastError = null
+    this.captureRecoveryError = null
+    this.captureFailures = 0
   }
   async load() {
     await this.io.mkdir(this.shots, { recursive: true, mode: 0o700 })
@@ -151,6 +195,10 @@ export class ScreenTrail {
     this.analysisSessionId = this.store.setting('analysisSessionId') ?? null
     if (this.analysisSessionId !== null && !validId(this.analysisSessionId)) throw new Error('invalid analysis session id')
     this.records = this.store.pool().map((item) => ({ ...item, analysisStatus: item.analysisStatus === 'analyzing' ? 'pending' : item.analysisStatus }))
+    this.analysisRetry = this.store.setting('analysisRetry') ?? null
+    if (this.analysisRetry && (!Array.isArray(this.analysisRetry.ids) || !Array.isArray(this.analysisRetry.selectedIds)
+      || !this.analysisRetry.ids.every(validId) || !this.analysisRetry.selectedIds.every(validId)
+      || !Number.isSafeInteger(this.analysisRetry.attempt) || this.analysisRetry.attempt < 1 || !Number.isFinite(this.analysisRetry.at))) throw new Error('invalid analysis retry state')
     for (const id of this.imageIds()) await this.io.access(path.join(this.shots, `${id}.jpg`))
     // 独立目录对应宿主原生分组，不把共用的 profile 目录当作插件专属工作区。
     this.analysisWorkspace = await this.ctx.workspaceRegistry.create(this.root, '屏幕纪事')
@@ -186,7 +234,7 @@ export class ScreenTrail {
     this.writes = operation.catch((error) => this.fail('state.write', error, true)); return operation
   }
   persistedSettings() {
-    return { analysisSessionId: this.analysisSessionId, sampleIntervalSec: this.settings.sampleIntervalSec, analysisWindowSec: this.settings.analysisWindowSec,
+    return { analysisSessionId: this.analysisSessionId, analysisRetry: this.analysisRetry, sampleIntervalSec: this.settings.sampleIntervalSec, analysisWindowSec: this.settings.analysisWindowSec,
       ...(this.hasModelSettings ? { modelSettings: this.modelSettings() } : {}) }
   }
   modelSettings() {
@@ -300,7 +348,7 @@ export class ScreenTrail {
     return { provider, model }
   }
   async assertReady() { if (!await this.ready || this.disposed) throw new Error(this.status.lastError || 'plugin is not ready') }
-  unfinishedCount() { return this.records.filter((item) => ['pending', 'analyzing'].includes(item.analysisStatus)).length }
+  unfinishedCount() { return this.records.filter((item) => ['pending', 'analyzing', 'failed'].includes(item.analysisStatus)).length }
   // 待分析容量覆盖完整采集窗口和一次模型超时，不能沿用历史保留条数提前停采。
   pendingCapacity() { return Math.max(this.settings.retention, Math.ceil((this.settings.analysisWindowSec + ANALYSIS_TIMEOUT_MS / 1000) / this.settings.sampleIntervalSec)) }
   resumeThreshold() { return this.pendingCapacity() - Math.min(6, Math.ceil(this.pendingCapacity() / 4)) }
@@ -319,7 +367,7 @@ export class ScreenTrail {
         this.capturePaused = false; this.holdCapture()
       } else {
         try { await this.resumeCapture() }
-        catch (error) { this.fail('capture.interval', error, true); throw error }
+        catch (error) { this.captureFailed('capture.interval', error); throw error }
       }
     }
   }
@@ -337,7 +385,10 @@ export class ScreenTrail {
   }
   async start() {
     await this.assertReady()
-    if (this.running) return
+    if (this.running) {
+      if (!this.capturePaused && !this.resumeTask && this.captureRetryTimer === null && !['ready', 'waiting', 'starting'].includes(this.captureSource.state)) this.scheduleCaptureRetry()
+      this.pumpAnalysis(); return
+    }
     this.status.selection = this.selection(); this.status.lastError = null; this.running = this.analysisEnabled = true
     const epoch = this.generation
     try {
@@ -347,15 +398,17 @@ export class ScreenTrail {
       this.log('recording.started', { sampleIntervalSec: this.settings.sampleIntervalSec, analysisWindowSec: this.settings.analysisWindowSec })
     } catch (error) {
       if (error.name === 'AbortError' && epoch !== this.generation) { this.log('recording.start_cancelled'); return }
-      this.fail('start', error, true); throw error
+      this.captureFailed('start', error); throw error
     }
   }
   stopCapture(reason) {
+    if (this.captureRetryTimer !== null) this.clearTimer(this.captureRetryTimer)
+    this.captureRetryTimer = null; this.captureRetryAt = null
     this.generation += 1; this.captureSource.stop()
     for (const job of this.captureQueue.splice(0)) { this.log('capture.cancelled', { reason }); job.resolve({ cancelled: true }) }
   }
   holdCapture() {
-    if (!this.running || this.capturePaused) return
+    if (!this.running || (this.capturePaused && this.capturePauseReason === 'capacity')) return
     this.capturePaused = true; this.capturePauseReason = 'capacity'; this.stopCapture('analysis backlog reached capacity')
     this.log('capture.backpressure', { unfinished: this.unfinishedCount(), capacity: this.pendingCapacity(), resumeAt: this.resumeThreshold(), analysisContinues: this.analysisEnabled })
   }
@@ -365,7 +418,7 @@ export class ScreenTrail {
     if (this.unfinishedCount() >= this.pendingCapacity()) { this.holdCapture(); return }
     this.capturePaused = false; this.capturePauseReason = null; this.selector.reset()
     const epoch = this.generation
-    const task = this.captureSource.start().then(() => {
+    const task = this.captureSource.start({ confirmFrame: this.captureFailures > 0 }).then(() => {
       if (epoch === this.generation && this.running) { this.status.permission = 'granted'; this.log('capture.resumed', { unfinished: this.unfinishedCount() }) }
     }).finally(() => { if (this.resumeTask?.task === task) this.resumeTask = null })
     this.resumeTask = { epoch, task }; return task
@@ -378,10 +431,11 @@ export class ScreenTrail {
   }
   pause() {
     this.running = this.analysisEnabled = false; this.stopCapture('recording paused'); this.capturePaused = false; this.capturePauseReason = null
-    this.cancelAnalysis(); this.log('recording.paused')
+    this.captureFailures = 0; this.cancelAnalysis(); this.log('recording.paused')
   }
   presence(message) {
     if (!this.running || this.capturePaused) return
+    if (['idle', 'excluded'].includes(message.type)) this.confirmCapture()
     if (message.type === 'waiting' || message.type === 'ready') {
       // 亮屏后的同一画面是一次新的观察，不能把熄屏时间算作旧画面的连续停留。
       this.selector.reset(); this.status.selfExcluded = false
@@ -434,7 +488,7 @@ export class ScreenTrail {
         if (job.epoch !== this.generation) { job.resolve({ cancelled: true }); continue }
         try { job.resolve(await this.capture(job)) } catch (error) {
           if (job.epoch !== this.generation && !(error instanceof StateWriteError)) { this.log('capture.cancelled', { message: error.message }); job.resolve({ cancelled: true }); continue }
-          job.reject(error); this.fail('capture', error, true); break
+          job.reject(error); this.captureFailed('capture', error); break
         }
       }
     })().finally(() => { this.sampleTask = null; if (this.captureQueue.length) this.pumpCapture() })
@@ -479,19 +533,44 @@ export class ScreenTrail {
   }
   pumpAnalysis(force = false) {
     if (this.analysisTask || !this.analysisEnabled || this.disposed) return
+    // 重试只使用原批次，不能把故障期间新采集的画面混入，或因容量清理丢掉失败证据。
+    if (!this.analysisRetry) {
+      const failed = this.records.filter((item) => item.analysisStatus === 'failed').sort((a, b) => a.at - b.at)
+      if (failed.length) {
+        const batch = failed.filter((item) => item.at < failed[0].at + this.settings.analysisWindowSec * 1000)
+        this.analysisRetry = { ids: batch.map((item) => item.id), selectedIds: representatives(batch, Math.max(6, Math.ceil(this.settings.analysisWindowSec / 15))).map((item) => item.id), attempt: 1, at: this.now() }
+      }
+    }
+    const retry = this.analysisRetry
+    if (retry) {
+      retry.ids = retry.ids.filter((id) => this.records.some((item) => item.id === id && item.analysisStatus !== 'complete'))
+      if (!retry.ids.length) { this.analysisRetry = null; return this.pumpAnalysis(force) }
+      if (!force && this.now() < retry.at) {
+        if (this.analysisTimer !== null) this.clearTimer(this.analysisTimer)
+        this.analysisTimer = this.setTimer(() => { this.analysisTimer = null; this.pumpAnalysis() }, retry.at - this.now())
+        return
+      }
+    }
     const pending = this.records.filter((item) => item.analysisStatus === 'pending').sort((a, b) => a.at - b.at)
-    if (!pending.length) return
+    if (!pending.length && !retry) return
     force ||= pending.some((item) => item.reason === 'manual')
     const windowMs = this.settings.analysisWindowSec * 1000
-    const due = Math.max(pending[0].at + windowMs, this.lastModelCallAt === null ? 0 : this.lastModelCallAt + windowMs)
-    if (!force && this.now() < due) {
+    const due = retry ? retry.at : Math.max(pending[0].at + windowMs, this.lastModelCallAt === null ? 0 : this.lastModelCallAt + windowMs)
+    if (!retry && !force && this.now() < due) {
       if (this.analysisTimer !== null) this.clearTimer(this.analysisTimer)
       this.analysisTimer = this.setTimer(() => { this.analysisTimer = null; this.pumpAnalysis() }, due - this.now()); return
     }
     if (this.analysisTimer !== null) this.clearTimer(this.analysisTimer)
     this.analysisTimer = null
-    const batch = force ? pending : pending.filter((item) => item.at < pending[0].at + windowMs)
-    const selected = representatives(batch, Math.max(6, Math.ceil(this.settings.analysisWindowSec / 15)))
+    const batch = retry ? this.records.filter((item) => retry.ids.includes(item.id)).sort((a, b) => a.at - b.at)
+      : force ? pending : pending.filter((item) => item.at < pending[0].at + windowMs)
+    let selected = retry ? retry.selectedIds.map((id) => batch.find((item) => item.id === id)).filter(Boolean)
+      : representatives(batch, Math.max(6, Math.ceil(this.settings.analysisWindowSec / 15)))
+    if (!selected.length) {
+      // 用户删除全部原代表图后，按既有选图规则处理本批剩余候选。
+      selected = representatives(batch, Math.max(6, Math.ceil(this.settings.analysisWindowSec / 15)))
+      this.log('analysis.retry_reselected', { selectedIds: selected.map((item) => item.id) })
+    }
     const version = this.analysisVersion; const controller = new AbortController(); this.controller = controller
     this.activeIds = new Set(batch.map((item) => item.id)); for (const record of batch) record.analysisStatus = 'analyzing'
     this.analysisTask = (async () => {
@@ -502,18 +581,38 @@ export class ScreenTrail {
         const result = await withSignal(this.analyze(batch, selected, controller.signal), controller.signal)
         if (version !== this.analysisVersion || this.disposed) return
         if (!result.committed) throw new Error('analysis ended without committing event changes')
+        if (this.status.lastError === this.analysisRecoveryError) this.status.lastError = null
+        this.analysisRecoveryError = null
+        this.analysisRetry = null
         this.finishEventBatch(batch, selected, result.usedObservationIds)
         this.activeIds.clear(); await this.prune(); await this.persist()
         this.log('analysis.completed', { observations: batch.length, selectedIds: selected.map((item) => item.id), activities: result.activities.length, ignored: result.ignoredObservationIds.length })
       } catch (error) {
-        if (error.eventCommit) this.finishEventBatch(batch, selected, error.usedObservationIds)
+        // 超时与提交可能在同一轮发生；以已落库状态为准，不能重新播放已保存的业务操作。
+        const committed = error.eventCommit || batch.every((item) => this.store.getObservation(item.id)?.analysisStatus === 'complete')
+        if (committed) { this.analysisRetry = null; this.finishEventBatch(batch, selected, error.usedObservationIds) }
         if (version !== this.analysisVersion || this.disposed) { this.log('analysis.cancelled', { ids: batch.map((item) => item.id) }); return }
-        if (!error.eventCommit) for (const record of batch) { record.analysisStatus = 'failed'; record.analysisError = String(error.message || error) }
-        this.fail('analysis', error); this.activeIds.clear(); await this.prune(); await this.persist()
+        if (!committed) {
+          for (const record of this.records) if (this.activeIds.has(record.id)) { record.analysisStatus = 'failed'; record.analysisError = String(error.message || error) }
+          const attempt = (retry?.attempt ?? 0) + 1; const delayMs = recoveryDelay(attempt)
+          this.analysisRetry = { ids: batch.map((item) => item.id), selectedIds: selected.map((item) => item.id), attempt, at: this.now() + delayMs }
+          this.log('analysis.retry_scheduled', { attempt, delayMs, observationIds: this.analysisRetry.ids })
+        }
+        this.fail('analysis', error); this.analysisRecoveryError = this.status.lastError
+        this.activeIds.clear(); await this.prune(); await this.persist()
       } finally { this.clearTimer(timeout); this.controller = null; this.activeIds.clear() }
-    })().catch((error) => this.fail('analysis.worker', error, true)).finally(() => {
+    })().catch((error) => {
+      // 存储/诊断自身失败也不能把本批永久留在 analyzing 状态。
+      if (version === this.analysisVersion && !this.disposed) {
+        for (const item of this.records) if (batch.some((frame) => frame.id === item.id) && item.analysisStatus === 'analyzing') item.analysisStatus = 'failed'
+        if (!this.analysisRetry && this.records.some((item) => batch.some((frame) => frame.id === item.id) && item.analysisStatus === 'failed')) {
+          this.analysisRetry = { ids: batch.map((item) => item.id), selectedIds: selected.map((item) => item.id), attempt: 1, at: this.now() + recoveryDelay(1) }
+        }
+      }
+      this.fail('analysis.worker', error, true)
+    }).finally(() => {
       this.analysisTask = null
-      if (this.running && this.capturePaused && this.unfinishedCount() <= this.resumeThreshold()) void this.resumeCapture().catch((error) => { if (error.name !== 'AbortError') this.fail('capture.resume', error, true) })
+      if (this.running && this.capturePauseReason === 'capacity' && this.unfinishedCount() <= this.resumeThreshold()) void this.resumeCapture().catch((error) => this.captureFailed('capture.resume', error))
       this.pumpAnalysis()
     })
   }
@@ -758,7 +857,8 @@ export class ScreenTrail {
       const observations = selected.map((item, index) => ({ number: index + 1, at: messageDateTime(item.at), lastSeenAt: messageDateTime(item.lastSeenAt),
         context: Object.fromEntries(Object.entries(item.context).filter(([key]) => key !== 'bundleId')), trigger: item.reason }))
       const language = this.settings.locale === 'zh' ? 'Write human-readable strings in Simplified Chinese.' : this.settings.locale === 'en' ? 'Write human-readable strings in English.' : 'Use the dominant language of the observed content.'
-      input = { system: prompt, text: `${language}\nAnalysis time: ${messageDateTime(this.now())}\nObservations in time order: ${JSON.stringify(observations)}` }
+      const retryNotice = this.analysisRetry ? '\nAutomatic retry of the same observation batch. Continue from existing conversation/tool results; do not repeat completed operations.' : ''
+      input = { system: prompt, text: `${language}${retryNotice}\nAnalysis time: ${messageDateTime(this.now())}\nObservations in time order: ${JSON.stringify(observations)}` }
       const content = [{ type: 'text', text: input.text }]
       for (const imageId of new Set(selected.map((item) => item.imageId))) {
         const data = await this.io.readFile(path.join(this.shots, `${imageId}.jpg`))
@@ -831,7 +931,7 @@ export class ScreenTrail {
   async prune() {
     await this.writes
     while (this.records.length > this.settings.retention) {
-      const item = [...this.records].reverse().find((record) => !this.activeIds.has(record.id) && ['complete', 'failed'].includes(record.analysisStatus))
+      const item = [...this.records].reverse().find((record) => !this.activeIds.has(record.id) && record.analysisStatus === 'complete')
       if (!item) break
       this.records.splice(this.records.indexOf(item), 1)
     }
@@ -852,9 +952,9 @@ export class ScreenTrail {
   }
   async clear() {
     this.diagnosticEpoch += 1; this.pause(); await this.sampleTask; await this.analysisTask; await this.diagnosticWrites
-    try { this.store.save({ records: [], clear: true, settings: this.persistedSettings() }) }
+    try { this.store.save({ records: [], clear: true, settings: { ...this.persistedSettings(), analysisRetry: null } }) }
     catch (error) { this.fail('history.clear', error, true); throw error }
-    this.records = []; this.selector.reset(); this.lastModelCallAt = null
+    this.records = []; this.analysisRetry = null; this.selector.reset(); this.lastModelCallAt = null
     await this.persist(); await this.collectImages(); await this.io.rm(this.diagnosticsDir, { recursive: true, force: true })
     this.status.lastAnalysis = null; this.status.lastError = null; this.status.selfExcluded = false
     for (const name of ['captures', 'keyframes', 'analyses', 'modelCalls', 'reusedImages', 'extended', 'skipped', 'excluded', 'coalesced', 'ignored']) this.status[name] = 0
@@ -872,7 +972,9 @@ export class ScreenTrail {
     await this.run('/usr/bin/open', ['x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture'])
   }
   state() {
-    return { ok: true, version: '0.7.0', storage: 'sqlite', eventsRevision: this.store?.revision ?? 0, analysisSessionId: this.analysisSessionId, ready: this.loaded, running: this.running, capturePaused: this.capturePaused, capturePauseReason: this.capturePauseReason,
+    return { ok: true, version: '0.7.1', storage: 'sqlite', eventsRevision: this.store?.revision ?? 0, analysisSessionId: this.analysisSessionId, ready: this.loaded, running: this.running, capturePaused: this.capturePaused, capturePauseReason: this.capturePauseReason,
+      recovery: { capture: { attempt: this.captureFailures, retryAt: this.captureRetryAt },
+        analysis: this.analysisRetry ? { attempt: this.analysisRetry.attempt, retryAt: this.analysisRetry.at } : null },
       unfinishedCount: this.unfinishedCount(), pendingCapacity: this.pendingCapacity(), captureResumeAt: this.resumeThreshold(), analysisEnabled: this.analysisEnabled, sampling: Boolean(this.sampleTask),
       analyzing: Boolean(this.analysisTask), busy: Boolean(this.sampleTask || this.analysisTask), queueLength: this.records.filter((item) => item.analysisStatus === 'pending').length,
       captureQueueLength: this.captureQueue.length, captureSource: this.captureSource.state, sampleIntervalSec: this.settings.sampleIntervalSec, captureFps: 1 / this.settings.sampleIntervalSec, analysisWindowSec: this.settings.analysisWindowSec,

@@ -64,7 +64,7 @@ test('failed attachment does not run the model or create an alternative ungroupe
   assert.equal(h.requests.length, 0); assert.equal(h.createdSessions.length, 1)
   assert.equal(h.state().observations[0].analysisStatus, 'failed')
   workspace.attachSession = attach
-  await h.trail.manualCapture(); await h.settle()
+  await h.advance(1000); await h.settle()
   assert.equal(h.state().analysisSessionId, id); assert.equal(h.createdSessions.length, 1)
   assert.deepEqual(workspace.sessionIds, [id]); assert.equal(h.requests.length, 1)
 })

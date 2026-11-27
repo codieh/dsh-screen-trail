@@ -322,7 +322,9 @@ if CommandLine.arguments.contains("--self-test-screen-check") {
 let argument = CommandLine.arguments.first(where: { $0.hasPrefix("--dimension=") })?.split(separator: "=").last
 let dimension = argument.flatMap { Int($0) } ?? 1600
 guard (480...4096).contains(dimension) else { fail("Invalid capture dimension") }
-guard CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() else { fail("Screen Recording permission is required for DeepSeek Harness or the Screen Trail helper. Enable it in System Settings, then restart recording.") }
+// 自动恢复只检查权限，不反复弹出系统授权；用户主动开始时仍可请求授权。
+let canRequestPermission = !CommandLine.arguments.contains("--no-permission-prompt")
+guard CGPreflightScreenCaptureAccess() || (canRequestPermission && CGRequestScreenCaptureAccess()) else { fail("Screen Recording permission is required for DeepSeek Harness or the Screen Trail helper. Enable it in System Settings, then restart recording.") }
 if #available(macOS 12.3, *) {
     let capture = Capture(dimension: dimension)
     capture.watchScreen()

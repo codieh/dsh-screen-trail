@@ -268,6 +268,7 @@ export async function createHost({ hold = false, reply, toolScript, corrupt = fa
       const store = new JournalStore(':memory:', options)
       if (history) store.save({ records: history.records, events: history.activities || [], settings: {
         legacyResetPending: false, analysisSessionId: history.analysisSessionId ?? null,
+        analysisRetry: history.analysisRetry ?? null,
         ...(history.sampleIntervalSec !== undefined ? { sampleIntervalSec: history.sampleIntervalSec } : {}),
         ...(history.analysisWindowSec !== undefined ? { analysisWindowSec: history.analysisWindowSec } : {}),
         ...(history.modelSettings ? { modelSettings: history.modelSettings } : {}),
@@ -277,6 +278,7 @@ export async function createHost({ hold = false, reply, toolScript, corrupt = fa
         closedSnapshot = { version: 1, records: store.pool(), activities: store.allEvents(),
           analysisSessionId: store.setting('analysisSessionId') ?? null, sampleIntervalSec: store.setting('sampleIntervalSec'),
           analysisWindowSec: store.setting('analysisWindowSec'),
+          analysisRetry: store.setting('analysisRetry'),
           ...(store.setting('modelSettings') ? { modelSettings: store.setting('modelSettings') } : {}) }
         close()
       }
@@ -301,6 +303,7 @@ export async function createHost({ hold = false, reply, toolScript, corrupt = fa
         emit: () => { if (source.state === 'ready') options.onFrame(makeFrame(screenValue, currentContext, now)) },
         presence: (type = 'idle') => options.onPresence({ type, at: now, context: currentContext }),
         lifecycle: (type) => { source.state = type === 'ready' ? 'ready' : 'waiting'; options.onPresence({ type, at: now, reason: 'test-screen-event' }) },
+        fail: (error = new Error('native connection interrupted')) => { source.state = 'failed'; options.onError(error) },
       }
       return source
     },
@@ -314,6 +317,7 @@ export async function createHost({ hold = false, reply, toolScript, corrupt = fa
     state: () => ({ ...trail.state(), records: trail.activities }),
     snapshot: () => closedSnapshot ?? ({ version: 1, records: trail.store.pool(), activities: trail.activities, ...trail.persistedSettings() }),
     setScreen: (value, context = currentContext) => { screenValue = value; currentContext = { ...context } },
+    setCaptureError: (error) => { captureError = error },
     frame: async (value = screenValue, { context = currentContext, elapsed = 500 } = {}) => {
       now += elapsed; screenValue = value; currentContext = { ...context }; source.emit(); await settle()
     },

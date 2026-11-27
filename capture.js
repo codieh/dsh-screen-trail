@@ -83,7 +83,8 @@ export class MacCapture {
       let failed = false
       let buffer = ''
       let detail = ''
-      const child = this.spawn(binary, [`--dimension=${this.maxDimension}`, `--sample-interval-sec=${this.sampleIntervalSec}`, ...(single ? ['--once'] : [])], { stdio: ['ignore', 'pipe', 'pipe'] })
+      const child = this.spawn(binary, [`--dimension=${this.maxDimension}`, `--sample-interval-sec=${this.sampleIntervalSec}`,
+        ...(!single && this.recovering ? ['--no-permission-prompt'] : []), ...(single ? ['--once'] : [])], { stdio: ['ignore', 'pipe', 'pipe'] })
       if (!single) this.streamChild = child
       this.jobs.add(child)
       const timer = this.setTimer(() => fail(new Error(this.recovering && !single
@@ -195,9 +196,10 @@ export class MacCapture {
     })
   }
 
-  async start() {
+  async start({ confirmFrame = false } = {}) {
     if (this.starting) return this.starting
     if (this.streamChild && ['ready', 'waiting'].includes(this.state)) return
+    if (confirmFrame) this.recovering = true
     this.state = 'starting'
     const epoch = this.epoch
     const task = this.launch().finally(() => { if (this.starting === task) this.starting = null })

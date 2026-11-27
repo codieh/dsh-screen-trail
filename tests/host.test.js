@@ -134,11 +134,12 @@ test('legacy history is discarded once while user preferences survive and old ch
 test('native permission failure rejects startup without a polling fallback', async (t) => {
   const h = await createHost({ captureError: 'Screen Recording permission is required' }); t.after(h.dispose)
   await assert.rejects(h.trail.start(), /Screen Recording/)
-  assert.equal(h.state().running, false); assert.equal(h.state().captureSource, 'failed'); assert.equal(h.state().permission, 'denied')
+  assert.equal(h.state().running, true); assert.equal(h.state().captureSource, 'failed'); assert.equal(h.state().permission, 'denied')
+  assert.notEqual(h.trail.captureRetryTimer, null)
 })
 
 test('disk failure rejects startup before native capture or model execution', async (t) => {
   const h = await createHost({ writeError: true }); t.after(async () => { h.release(); await assert.rejects(h.trail.dispose(), /disk write failed/) })
   await assert.rejects(h.trail.start(), /disk write failed/)
-  assert.equal(h.state().running, false); assert.equal(h.requests.length, 0); assert.equal(h.state().captures, 0)
+  assert.equal(h.state().running, true); assert.equal(h.requests.length, 0); assert.equal(h.state().captures, 0)
 })

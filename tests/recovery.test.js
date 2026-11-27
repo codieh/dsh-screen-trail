@@ -129,7 +129,7 @@ test('a storage failure while restoring old analysis rejects startup visibly', a
   const host = await createHost({ writeError: true, history: backlog(1) })
   t.after(async () => { host.release(); await assert.rejects(host.trail.dispose(), /disk write failed/) })
   await assert.rejects(host.trail.start(), /disk write failed/)
-  assert.equal(host.state().running, false)
+  assert.equal(host.state().running, true)
   assert.equal(host.requests.length, 0)
   assert.match(host.state().lastError, /disk write failed/)
 })

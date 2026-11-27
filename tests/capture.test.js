@@ -62,6 +62,16 @@ test('one long-lived native process supplies frames and stops without a false er
   await h.capture.start(); assert.equal(h.children.length, 1)
   h.capture.stop(); await settle(); assert.equal(h.errors.length, 0); assert.equal(h.capture.state, 'stopped')
 })
+
+test('automatic rebuild requires a screen callback and suppresses repeated permission prompts', async () => {
+  const timers = clock(); const h = native('ready', timers)
+  await h.capture.start({ confirmFrame: true }); await settle()
+  assert.ok(h.children[0].args.includes('--no-permission-prompt'))
+  assert.equal(h.capture.recovering, true)
+  await timers.advance(60000)
+  assert.equal(h.errors.length, 1); assert.match(h.errors[0].message, /before a screen frame/)
+  assert.equal(h.capture.state, 'failed'); h.capture.stop()
+})
 test('sampling interval reaches the native helper and rejects invalid values', async (t) => {
   const h = native('frame', { sampleIntervalSec: 17 }); t.after(() => h.capture.stop())
   await h.capture.start()
