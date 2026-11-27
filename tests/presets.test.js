@@ -29,7 +29,7 @@ test('a fresh analysis mounts the host default preset before publishing and subm
 test('restart mounts the saved preset, not a newly selected host default', async (t) => {
   const first = await createHost()
   await first.trail.manualCapture(); await first.settle(); await first.dispose()
-  const h = await createHost({ history: JSON.parse(first.files.get(`${root}/state.json`)), conversations: first.conversations,
+  const h = await createHost({ history: first.snapshot(), conversations: first.conversations,
     defaultPreset: 'minimal', presetDefinitions: new Map([['standard', definition()], ['minimal', definition()]]) }); t.after(h.dispose)
   await h.trail.manualCapture(); await h.settle()
   assert.deepEqual(h.mountedPresets, ['standard'])
@@ -67,7 +67,7 @@ test('a legacy session without a preset stays intact while new analysis uses a p
 test('a missing saved preset fails without silently using the default or replacing history', async (t) => {
   const first = await createHost()
   await first.trail.manualCapture(); await first.settle(); await first.dispose()
-  const h = await createHost({ history: JSON.parse(first.files.get(`${root}/state.json`)), conversations: first.conversations,
+  const h = await createHost({ history: first.snapshot(), conversations: first.conversations,
     defaultPreset: 'minimal', presetDefinitions: new Map([['minimal', definition()]]) }); t.after(h.dispose)
   await h.trail.manualCapture(); await h.settle()
   assert.match(h.state().lastError, /agent preset not found: standard/)
@@ -124,14 +124,14 @@ test('cancellation during preset mounting cannot publish a late analysis agent',
   assert.equal(h.ctx.agents.get(h.createdSessions[0]), undefined)
 })
 
-test('host pre-step compaction runs with execution tools blocked and is traced without summary text', async (t) => {
+test('host pre-step compaction runs without plugin tool restrictions and is traced without summary text', async (t) => {
   const preset = definition()
   // 这是宿主生命周期契约，不是插件直接调用 compactIfNeeded 的替代实现。
   preset.beforeStep = async ({ agent, append, turn }) => {
     const previous = agent.session.events.filter((event) => event.type === 'assistant/message').at(-1)
     if (!previous) return
-    assert.deepEqual(agent.toolRestriction, { allow: [] })
-    assert.match(agent.toolGuard({ name: 'run_code' }), /不执行工具/)
+    assert.equal(agent.toolRestriction, null)
+    assert.equal(agent.toolGuard, null)
     const compactionId = `host-compaction-${turn}`
     agent.session.measuredTokens = 900000
     append('compaction/start', { compactionId, turn })

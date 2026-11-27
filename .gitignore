@@ -8,6 +8,7 @@ native/module-cache/
 # Never part of the package
 node_modules/
 *.log
+journal.sqlite*
 
 # Local CI output
 dist/

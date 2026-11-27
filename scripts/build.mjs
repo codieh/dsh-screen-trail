@@ -1,13 +1,13 @@
-import { rmSync } from 'node:fs'
+import { rmSync, existsSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
-// 只清理项目生成目录，避免删除源码后仍把旧 JS 混入安装包。
 const root = new URL('../', import.meta.url)
+// 编译前清理生成目录，不把删除源码后遗留的入口打进安装包。
 rmSync(new URL('dist/', root), { recursive: true, force: true })
-const result = spawnSync(process.execPath, [fileURLToPath(new URL('node_modules/typescript/bin/tsc', root))], {
-  cwd: fileURLToPath(root), stdio: 'inherit',
-})
+const compiler = new URL('node_modules/typescript/bin/tsc', root)
+if (!existsSync(compiler)) throw new Error('Build dependencies missing; run npm ci first')
+const result = spawnSync(process.execPath, [fileURLToPath(compiler)], { cwd: fileURLToPath(root), stdio: 'inherit' })
 if (result.error) throw result.error
 if (result.signal) throw new Error(`TypeScript build terminated by ${result.signal}`)
 process.exit(result.status ?? 1)

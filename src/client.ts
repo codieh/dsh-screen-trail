@@ -1,10 +1,14 @@
-/** 保持宿主提供的全局脚本协议。 */
-interface Window { __ModuleLoader__: { load(entry: { id: string; factory(require: (id: string) => any): any }): void } }
+interface Window { __ModuleLoader__: { load(entry: { id: string; factory(require: (id: string) => any): unknown }): void } }
+type PanelState = ReturnType<import('./trail.js').ScreenTrail['state']>
+type EventPage = import('./types.js').DayPage & { pages: number }
+type ModelDetails = Awaited<ReturnType<import('./trail.js').ScreenTrail['modelDetails']>>
+type ModelCatalog = Awaited<ReturnType<import('./trail.js').ScreenTrail['modelCatalog']>>['models']
 window.__ModuleLoader__.load({
   id: '@local/dsh-screen-trail',
   factory(require) {
-    const React = require('react')
-    const h = React.createElement
+    const React: typeof import('react') = require('react')
+    // 宿主 Slot 接收动态属性；状态和组件输入在本文件内仍使用明确的类型。
+    const h = React.createElement as (type: unknown, props?: object | null, ...children: unknown[]) => import('react').ReactElement
 
     const NS = 'screen-trail'
     const PANEL_ID = 'screen-trail'
@@ -32,7 +36,20 @@ window.__ModuleLoader__.load({
       idle: 'Not recording',
       working: 'Analysing',
       sampling: 'Sampling interval',
+      analysisModel: 'Analysis model',
+      effort: 'Reasoning effort',
+      hostModel: 'Follow host model',
+      defaultEffort: 'Model default',
+      saveModel: 'Save model settings',
+      refreshModels: 'Refresh models',
+      loadingModels: 'Loading model information…',
+      unsupportedEffort: 'Unsupported by this model',
+      saveModelFailed: 'Model settings were not saved. Check the error and retry.',
       activities: 'Activities',
+      today: 'Today', yesterday: 'Yesterday', journalDates: 'Journal dates', chooseDate: 'Choose date',
+      previousDay: 'Previous day', nextDay: 'Next day', dayEmpty: 'No activities on this day',
+      dayEmptyBody: 'Choose another date to view your journal.', loadingEvents: 'Loading activities…', loadMore: 'Load more',
+      eventsChanged: 'Activities changed while loading. Please retry.',
       evidence: 'Screenshots',
       observations: 'Capture evidence',
       selfExcluded: 'This recorder page is excluded. Switch to another app or a normal chat to collect work; observing continues in the background.',
@@ -119,7 +136,20 @@ window.__ModuleLoader__.load({
       idle: '未记录',
       working: '分析中',
       sampling: '采样间隔',
+      analysisModel: '分析模型',
+      effort: '思考强度',
+      hostModel: '跟随宿主模型',
+      defaultEffort: '模型默认',
+      saveModel: '保存模型设置',
+      refreshModels: '刷新模型',
+      loadingModels: '正在读取模型信息…',
+      unsupportedEffort: '此模型不支持该档位',
+      saveModelFailed: '模型设置未保存，请检查错误后重试。',
       activities: '活动',
+      today: '今天', yesterday: '昨天', journalDates: '纪事日期', chooseDate: '选择日期',
+      previousDay: '前一天', nextDay: '后一天', dayEmpty: '当天暂无记录',
+      dayEmptyBody: '可以切换日期查看其他记录。', loadingEvents: '正在读取记录…', loadMore: '加载更多',
+      eventsChanged: '分页读取期间记录发生变化，请重试。',
       evidence: '截图依据',
       observations: '采集证据',
       selfExcluded: '纪事自身页面已排除。请切换到其他应用或正常聊天页面，后台会继续采集。',
@@ -222,6 +252,14 @@ window.__ModuleLoader__.load({
 .st-stats { display:flex; flex-wrap:wrap; gap:6px 16px; max-width:960px; margin:10px auto 0;
   font-size:12px; color:var(--dsw-alias-label-secondary); }
 .st-body { flex:1; min-height:0; overflow:auto; scrollbar-gutter:stable; }
+.st-dates { flex:none; border-bottom:0.5px solid var(--dsw-alias-border-l1); padding:10px clamp(20px,4vw,48px); }
+.st-datebar { max-width:960px; margin:auto; display:flex; align-items:center; gap:8px; }
+.st-tabs { flex:1; display:flex; gap:4px; min-width:0; overflow:auto; scrollbar-width:thin; }
+.st-tab { flex:1; justify-content:center; border-color:transparent; background:transparent; }
+.st-tab[aria-selected="true"] { color:var(--dsw-alias-brand-primary); background:var(--dsw-alias-bg-layer-2); border-color:var(--dsw-alias-border-l2); }
+.st-dateinput { min-width:0; width:132px; padding:0 8px; }
+.st-dayheading { display:flex; justify-content:space-between; gap:12px; margin:0; font-size:13px; color:var(--dsw-alias-label-secondary); font-weight:500; }
+.st-more { align-self:center; }
 .st-inner { max-width:960px; margin:0 auto; padding:16px clamp(24px,4vw,48px) 56px; display:flex; flex-direction:column; gap:12px; }
 .st-banner { display:flex; flex-direction:column; gap:8px; padding:14px 16px; border-radius:14px;
   border:0.5px solid color-mix(in srgb, var(--dsw-alias-state-warn-primary) 45%, transparent);
@@ -291,6 +329,9 @@ window.__ModuleLoader__.load({
   .st-inner { padding-inline:20px; }
   .st-card { flex-direction:column; }
   .st-thumb { width:100%; height:160px; }
+  .st-datebar { flex-wrap:wrap; }
+  .st-tabs { order:3; flex-basis:100%; }
+  .st-dateinput { margin-left:auto; }
 }
 `
 
@@ -336,50 +377,115 @@ window.__ModuleLoader__.load({
       )
     }
 
-    /**
-     * Format one timestamp relative to now.
-     * @param at - epoch milliseconds.
-     * @param locale - BCP 47 tag matching the UI language.
-     * @returns the relative phrase.
-     */
-    function relativeTime(at, locale) {
-      const diff = at - Date.now()
-      const abs = Math.abs(diff)
-      const format = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' })
-      if (abs < 45_000) return format.format(0, 'second')
-      if (abs < 3_600_000) return format.format(Math.round(diff / 60_000), 'minute')
-      if (abs < 86_400_000) return format.format(Math.round(diff / 3_600_000), 'hour')
-      return format.format(Math.round(diff / 86_400_000), 'day')
-    }
+    // 日期切换、显示与后端查询统一使用台北时区，不依赖机器的系统时区。
+    function journalDate(at) { return new Date(at + 8 * 3600000).toISOString().slice(0, 10) }
+    function shiftDate(day, offset) { return journalDate(Date.parse(`${day}T00:00:00+08:00`) + offset * 86400000) }
 
     /** @returns the clock label for one capture. */
     function clockTime(at, locale) {
-      try {
-        return new Date(at).toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit' })
-      } catch {
-        return new Date(at).toISOString().slice(11, 16)
-      }
+      return new Date(at).toLocaleTimeString(locale, { timeZone: 'Asia/Taipei', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
     }
 
-    /**
-     * The panel page: header controls plus the digest timeline.
-     * @param props - framework locale seat.
-     * @returns the rendered page.
-     */
+    /** 模型配置独立于采集轮询，未保存的选择不被定时刷新覆盖。 */
+    function ModelSettings({ state, pending, act, t }) {
+      const prefs = state.modelSettings || { provider: '', model: '', reasoningEffort: null }
+      const savedKey = JSON.stringify(prefs)
+      const [catalog, setCatalog] = React.useState<ModelCatalog>([])
+      const [modelKey, setModelKey] = React.useState(prefs.provider && prefs.model ? JSON.stringify([prefs.provider, prefs.model]) : '')
+      const [effort, setEffort] = React.useState(prefs.reasoningEffort || '')
+      const [info, setInfo] = React.useState<ModelDetails | null>(null)
+      const [catalogError, setCatalogError] = React.useState<string | null>(null)
+      const [error, setError] = React.useState<string | null>(null)
+      const [refresh, setRefresh] = React.useState(0)
+      const [loading, setLoading] = React.useState(true)
+      const hostKey = modelKey ? '' : JSON.stringify([state.hostModel?.provider, state.hostModel?.model])
+      React.useEffect(() => {
+        setModelKey(prefs.provider && prefs.model ? JSON.stringify([prefs.provider, prefs.model]) : '')
+        setEffort(prefs.reasoningEffort || '')
+      }, [savedKey])
+      React.useEffect(() => {
+        const controller = new AbortController()
+        setCatalogError(null)
+        void (async () => {
+          try {
+            const response = await fetch(api('models'), { signal: controller.signal, cache: 'no-store' })
+            const value = await response.json()
+            if (!response.ok || !value.ok) throw new Error(value.error || `HTTP ${response.status}`)
+            if (!controller.signal.aborted) setCatalog(value.models)
+          } catch (cause) { if (!controller.signal.aborted) setCatalogError(String(cause.message || cause)) }
+        })()
+        return () => controller.abort()
+      }, [refresh])
+      React.useEffect(() => {
+        const controller = new AbortController()
+        setLoading(true); setInfo(null); setError(null)
+        void (async () => {
+          try {
+            const [provider, model] = modelKey ? JSON.parse(modelKey) : ['', '']
+            const query = new URLSearchParams({ provider, model })
+            const response = await fetch(`${api('model-info')}?${query}`, { signal: controller.signal, cache: 'no-store' })
+            const value = await response.json()
+            if (!response.ok || !value.ok) throw new Error(value.error || `HTTP ${response.status}`)
+            if (!controller.signal.aborted) setInfo(value)
+          } catch (cause) { if (!controller.signal.aborted) setError(String(cause.message || cause)) }
+          finally { if (!controller.signal.aborted) setLoading(false) }
+        })()
+        return () => controller.abort()
+      }, [modelKey, hostKey, refresh])
+      const efforts = info?.efforts || []
+      const supported = !effort || !info || efforts.some((item) => item.id === effort)
+      const models = [...catalog]
+      if (modelKey && !models.some((item) => JSON.stringify([item.provider, item.model]) === modelKey)) {
+        const [provider, model] = JSON.parse(modelKey)
+        models.push({ provider, model, name: model, providerName: provider })
+      }
+      return h('div', { className: 'st-headrow', style: { paddingTop: '10px' } },
+        h('label', { className: 'st-interval' }, t('analysisModel'),
+          h('select', { className: 'st-select', style: { maxWidth: 'min(360px, 65vw)' }, value: modelKey, disabled: pending,
+            'aria-label': t('analysisModel'), onChange: (event) => setModelKey(event.target.value) },
+          h('option', { value: '' }, `${t('hostModel')}${!modelKey && info ? ` (${info.name})` : ''}`),
+          models.map((item) => h('option', { key: JSON.stringify([item.provider, item.model]), value: JSON.stringify([item.provider, item.model]) }, `${item.providerName} / ${item.name}`)))),
+        h('label', { className: 'st-interval' }, t('effort'),
+          h('select', { className: 'st-select', value: effort, disabled: pending || loading, 'aria-label': t('effort'),
+            onChange: (event) => setEffort(event.target.value) },
+          h('option', { value: '' }, `${t('defaultEffort')}${info?.defaultEffort ? ` (${info.defaultEffort})` : ''}`),
+          effort && !efforts.some((item) => item.id === effort) && h('option', { value: effort, disabled: true }, info ? `${effort} (${t('unsupportedEffort')})` : effort),
+          efforts.map((item) => h('option', { key: item.id, value: item.id }, item.name || item.id)))),
+        h('button', { className: 'st-btn', type: 'button', disabled: pending || loading || !info || !supported,
+          onClick: async () => {
+            const [provider, model] = modelKey ? JSON.parse(modelKey) : ['', '']
+            const next = await act('setModelSettings', { settings: { provider, model, reasoningEffort: effort || null } })
+            setError(next ? null : t('saveModelFailed'))
+          } }, t('saveModel')),
+        h('button', { className: 'st-btn ghost', type: 'button', disabled: pending, onClick: () => { setError(null); setRefresh((value) => value + 1) } }, t('refreshModels')),
+        loading && h('span', { className: 'st-interval', role: 'status' }, t('loadingModels')),
+        catalogError && h('div', { className: 'st-error', role: 'alert' }, catalogError),
+        error && h('div', { className: 'st-error', role: 'alert' }, error),
+      )
+    }
+
     function Panel(props) {
       const t = typeof props.t === 'function' ? props.t : (key) => EN[key] ?? key
       const locale = (typeof document !== 'undefined' && document.documentElement.lang)
         || (typeof navigator !== 'undefined' && navigator.language)
         || 'en'
-      const [state, setState] = React.useState(null)
-      const [error, setError] = React.useState(null)
+      const [state, setState] = React.useState<PanelState | null>(null)
+      const [error, setError] = React.useState<string | null>(null)
       const [pending, setPending] = React.useState(false)
-      const [open, setOpen] = React.useState(null)
-      const [preview, setPreview] = React.useState(null)
+      const [open, setOpen] = React.useState<string | null>(null)
+      const [preview, setPreview] = React.useState<string | null>(null)
       const [confirming, setConfirming] = React.useState(false)
       const seq = React.useRef(0)
-      const previewRef = React.useRef(null)
-      const pageRef = React.useRef(null)
+      const previewRef = React.useRef<HTMLDivElement | null>(null)
+      const pageRef = React.useRef<HTMLDivElement | null>(null)
+      const today = journalDate(Date.now())
+      const [selectedDate, setSelectedDate] = React.useState(today)
+      const [pageCount, setPageCount] = React.useState(1)
+      const [eventPage, setEventPage] = React.useState<EventPage | null>(null)
+      const [eventError, setEventError] = React.useState<string | null>(null)
+      const [eventsLoading, setEventsLoading] = React.useState(false)
+      const [eventRetry, setEventRetry] = React.useState(0)
+      const eventCache = React.useRef<EventPage | null>(null)
 
       React.useEffect(() => {
         const page = pageRef.current
@@ -397,6 +503,38 @@ window.__ModuleLoader__.load({
         if (page) { visibility.observe(page); mark(page.getClientRects().length > 0) }
         return () => { titles.disconnect(); visibility.disconnect(); mark(false) }
       }, [])
+
+      React.useEffect(() => {
+        if (!state?.ready) return undefined
+        const controller = new AbortController()
+        const previous = eventCache.current
+        const append = previous?.date === selectedDate && previous.revision === state.eventsRevision && previous.pages < pageCount
+        const reusable = append ? previous : null
+        setEventsLoading(true); setEventError(null)
+        void (async () => {
+          try {
+            let records = reusable?.records || []; let cursor = reusable?.nextCursor
+            let loaded = reusable?.pages || 0; let result; let revision = reusable?.revision
+            // 自动更新时重查已经展开的页数，不能用新首页拼接旧的分页快照。
+            while (loaded < pageCount && (!loaded || cursor)) {
+              const query = new URLSearchParams({ date: selectedDate, ...(cursor ? { cursor } : {}) })
+              const response = await fetch(`${api('events')}?${query}`, { signal: controller.signal, cache: 'no-store' })
+              result = await response.json()
+              if (!response.ok || result.ok !== true) throw new Error(result.error || `HTTP ${response.status}`)
+              if (controller.signal.aborted) return
+              if (revision !== undefined && result.revision !== revision) throw new Error(t('eventsChanged'))
+              revision = result.revision
+              records = [...records, ...result.records]; cursor = result.nextCursor; loaded++
+            }
+            if (controller.signal.aborted || !result) return
+            const next = { ...result, records, nextCursor: cursor, pages: loaded }
+            eventCache.current = next; setEventPage(next)
+          } catch (cause) {
+            if (!controller.signal.aborted) setEventError(String(cause.message || cause))
+          } finally { if (!controller.signal.aborted) setEventsLoading(false) }
+        })()
+        return () => controller.abort()
+      }, [selectedDate, state?.ready, state?.eventsRevision, pageCount, eventRetry])
 
       React.useEffect(() => {
         let alive = true
@@ -437,7 +575,7 @@ window.__ModuleLoader__.load({
         return () => window.removeEventListener('keydown', onKey)
       }, [preview])
 
-      const act = React.useCallback(async (action, extra) => {
+      const act = React.useCallback(async (action: string, extra?: Record<string, unknown>) => {
         seq.current += 1
         setPending(true)
         try {
@@ -459,16 +597,16 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
-      const records = (state && Array.isArray(state.records)) ? state.records : []
+      const records = eventPage?.date === selectedDate ? eventPage.records : []
       const observations = (state && Array.isArray(state.observations)) ? state.observations : []
-      const hasData = records.length > 0 || observations.length > 0
+      const hasData = Number(state?.activityCount) > 0 || observations.length > 0
       const running = Boolean(state && state.running)
       const screenWaiting = Boolean(state && state.captureSource === 'waiting')
       const busy = Boolean(state && state.busy)
       const sampling = Boolean(state && state.sampling)
       const analyzing = Boolean(state && state.analyzing)
       const denied = Boolean(state && state.permission === 'denied')
-      const started = Boolean(state && (Number(state.captures) > 0 || records.length > 0))
+      const started = Boolean(state && (Number(state.captures) > 0 || state.activityCount > 0))
       const intervalSec = (state && state.analysisWindowSec) || 300
       const sampleIntervalSec = state?.sampleIntervalSec ?? 5
       const intervalOptions = Array.from(new Set([30, 60, 120, 300, intervalSec]))
@@ -485,6 +623,9 @@ window.__ModuleLoader__.load({
       }
 
       const statusText = `${state && state.capturePaused ? t('draining') : screenWaiting ? t('screenWaiting') : state && state.captureSource === 'starting' ? t('eventStarting') : running ? t('recording') : started ? t('paused') : t('idle')}${analyzing ? ` · ${t('working')}` : ''}`
+      const chooseDay = (day) => { if (day && day !== selectedDate) { setSelectedDate(day); setPageCount(1); setOpen(null) } }
+      const dateLabel = (day) => day === today ? t('today') : day === shiftDate(today, -1) ? t('yesterday') : day.slice(5).replace('-', '/')
+      const tabEnd = selectedDate > shiftDate(today, -3) ? today : shiftDate(selectedDate, 3)
 
       return h('div', { className: 'st-page', ref: pageRef, 'data-screen-trail-surface': true },
         h('style', { key: 'style' }, CSS),
@@ -560,11 +701,12 @@ window.__ModuleLoader__.load({
                 onClick: () => setConfirming(true),
               }, t('clear'))),
           ),
+          state?.ready && h(ModelSettings, { state, pending, act, t }),
           state && h('div', { className: 'st-stats' },
             h('span', null, `${t('sampling')}: ${sampleIntervalSec} ${t('seconds')}`),
             h('span', null, `${t('samples')}: ${state.captures || 0}`),
             h('span', null, `${t('keyframes')}: ${state.keyframes || 0}`),
-            h('span', null, `${t('activities')}: ${records.length}`),
+            h('span', null, `${t('activities')}: ${state?.activityCount ?? 0}`),
             h('span', null, `${t('queued')}: ${state.queueLength || 0}`),
             h('span', null, `${t('analysed')}: ${state.analyses || 0}`),
             h('span', null, `${t('modelCalls')}: ${state.modelCalls || 0}`),
@@ -572,8 +714,34 @@ window.__ModuleLoader__.load({
             h('span', null, `${t('eventSource')}: ${t(({ ready: 'eventReady', waiting: 'screenWaiting', starting: 'eventStarting', failed: 'eventFailed' })[state.captureSource] || 'eventStopped')}`),
           ),
         ),
+        h('nav', { className: 'st-dates', 'aria-label': t('journalDates') },
+          h('div', { className: 'st-datebar' },
+            h('button', { type: 'button', className: 'st-btn', 'aria-label': t('previousDay'),
+              onClick: () => chooseDay(shiftDate(selectedDate, -1)) }, '‹'),
+            h('div', { className: 'st-tabs', role: 'tablist', 'aria-label': t('journalDates') },
+              Array.from({ length: 7 }, (_, index) => {
+                const day = shiftDate(tabEnd, index - 6)
+                return h('button', { type: 'button', className: 'st-btn st-tab', role: 'tab', key: day, id: `st-date-${day}`,
+                  'aria-controls': 'st-day-events', 'aria-selected': day === selectedDate, tabIndex: day === selectedDate ? 0 : -1,
+                  title: day, onClick: () => chooseDay(day),
+                  onKeyDown: (event) => {
+                    let next
+                    if (event.key === 'ArrowLeft') next = shiftDate(day, -1)
+                    else if (event.key === 'ArrowRight' && day < today) next = shiftDate(day, 1)
+                    else if (event.key === 'Home') next = shiftDate(tabEnd, -6)
+                    else if (event.key === 'End') next = tabEnd
+                    if (next) { event.preventDefault(); chooseDay(next); requestAnimationFrame(() => document.getElementById(`st-date-${next}`)?.focus()) }
+                  } }, dateLabel(day))
+              })),
+            h('button', { type: 'button', className: 'st-btn', 'aria-label': t('nextDay'), disabled: selectedDate >= today,
+              onClick: () => chooseDay(shiftDate(selectedDate, 1)) }, '›'),
+            h('input', { type: 'date', className: 'st-select st-dateinput', value: selectedDate, max: today,
+              'aria-label': t('chooseDate'), onChange: (event) => { if (event.target.validity.valid) chooseDay(event.target.value) } }),
+          )),
         h('div', { className: 'st-body' },
-          h('div', { className: 'st-inner' },
+          h('div', { className: 'st-inner', role: 'tabpanel', id: 'st-day-events', 'aria-labelledby': `st-date-${selectedDate}` },
+            h('h2', { className: 'st-dayheading' }, h('span', null, selectedDate),
+              h('span', null, `${t('activities')}: ${eventPage?.date === selectedDate ? eventPage.total : '—'}`)),
             state && running && state.selfExcluded && h('section', { className: 'st-banner', role: 'status' }, h('p', null, t('selfExcluded'))),
             state && state.capturePaused && h('section', { className: 'st-banner', role: 'status' },
               h('h2', null, t('backlogTitle')),
@@ -620,7 +788,10 @@ window.__ModuleLoader__.load({
             ),
             error && !denied && h('div', { className: 'st-error', key: 'error', role: 'alert' },
               h('code', null, shortError(error))),
-            records.length === 0
+            eventError && h('div', { className: 'st-error', role: 'alert' }, h('span', null, eventError),
+              h('button', { type: 'button', className: 'st-btn', onClick: () => { eventCache.current = null; setEventRetry((value) => value + 1) } }, t('retry'))),
+            eventsLoading && h('div', { className: 'st-note', role: 'status' }, t('loadingEvents')),
+            records.length === 0 && !eventsLoading && !eventError
               ? h('section', { className: 'st-empty', key: 'empty' },
                 h('svg', {
                   className: 'st-mark', viewBox: '0 0 24 24', fill: 'none',
@@ -631,15 +802,15 @@ window.__ModuleLoader__.load({
                   h('path', { d: 'M8.4 20.3h7.2M12 16.8v3.5' }),
                   h('circle', { cx: 12, cy: 10.5, r: 2.2, fill: 'currentColor', stroke: 'none' }),
                 ),
-                h('h2', null, t(observations.length ? 'waitingTitle' : 'emptyTitle')),
-                h('p', null, t(observations.length ? 'waitingBody' : 'emptyBody')),
-                h('button', {
+                h('h2', null, t(selectedDate === today && observations.length ? 'waitingTitle' : 'dayEmpty')),
+                h('p', null, t(selectedDate === today && observations.length ? 'waitingBody' : 'dayEmptyBody')),
+                selectedDate === today && h('button', {
                   className: 'st-btn primary',
                   type: 'button',
                   disabled: pending || running || Boolean(state && state.ready === false),
                   onClick: () => { void act('start') },
                 }, screenWaiting ? t('screenWaiting') : busy ? t('working') : running ? t('recording') : t('start')),
-                h('p', { className: 'st-note' }, t('emptyNote')),
+                selectedDate === today && h('p', { className: 'st-note' }, t('emptyNote')),
               )
               : records.map((record) => renderRecord(record, {
                 key: record.id,
@@ -651,6 +822,10 @@ window.__ModuleLoader__.load({
                 onEvidence: (id) => setPreview(id),
                 onDelete: () => { void act('delete', { id: record.id }) },
               })),
+            eventPage?.date === selectedDate && eventPage.nextCursor && h('button', {
+              type: 'button', className: 'st-btn st-more', disabled: eventsLoading,
+              onClick: () => setPageCount((value) => value + 1),
+            }, t('loadMore')),
             observations.length > 0 && h('details', { className: 'st-observations' },
               h('summary', null, `${t('observations')} (${observations.length})`),
               observations.map((record) => renderRecord(record, { key: record.id, t, locale, expanded: false,
@@ -713,9 +888,8 @@ window.__ModuleLoader__.load({
         })),
         h('div', { className: 'st-card-body' },
           h('div', { className: 'st-meta' },
-            h('span', null, clockTime(record.at, locale)),
-            h('span', null, relativeTime(record.at, locale)),
-            record.lastSeenAt > record.at ? h('span', null, `${t('observedUntil')} ${clockTime(record.lastSeenAt, locale)}`) : null,
+            h('span', null, `${clockTime(record.at, locale)}${record.lastSeenAt > record.at
+              ? `–${journalDate(record.lastSeenAt) !== journalDate(record.at) ? `${journalDate(record.lastSeenAt)} ` : ''}${clockTime(record.lastSeenAt, locale)}` : ''}`),
             record.imageReused ? h('span', null, t('reuse')) : null,
             record.reason && reasons[record.reason] ? h('span', null, t(reasons[record.reason])) : null,
             appName ? h('span', { className: 'st-app' }, appName) : null,

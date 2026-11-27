@@ -48,7 +48,7 @@ test('analysis is a real native conversation turn, not a second mirrored model r
   assert.equal(JSON.parse(messages(session)[1].data.content[0].text).activities.length, 1)
   assert.equal(h.requests.length, 1); assert.equal(h.requests[0].sessionId, id)
   assert.equal(h.state().lastAnalysis.sessionId, id); assert.ok(h.flushedSessions.includes(id))
-  assert.equal(JSON.parse(h.files.get(`${root}/state.json`)).analysisSessionId, id)
+  assert.equal(h.trail.store.setting('analysisSessionId'), id)
 })
 
 test('successive analyses append to one session and keep native message history', async (t) => {
@@ -57,7 +57,7 @@ test('successive analyses append to one session and keep native message history'
   await h.advance(hour); h.setScreen(255); await h.trail.manualCapture(); await h.settle()
   assert.equal(h.createdSessions.length, 1); assert.equal(h.state().analysisSessionId, id)
   assert.equal(messages(h.conversations.get(id)).length, 4)
-  assert.equal(h.requests.length, 2); assert.equal(h.requests[1].messages.length, 3)
+  assert.equal(h.requests.length, 2); assert.equal(h.requests[1].messages.length, 4)
   assert.equal(h.state().records.length, 1)
 })
 
@@ -95,7 +95,7 @@ test('restart restores the associated conversation instead of creating another o
   const first = await createHost()
   await first.trail.manualCapture(); await first.settle()
   const id = first.state().analysisSessionId; await first.dispose()
-  const h = await createHost({ history: JSON.parse(first.files.get(`${root}/state.json`)), conversations: first.conversations, startAt: 1700000000000 + hour }); t.after(h.dispose)
+  const h = await createHost({ history: first.snapshot(), conversations: first.conversations, startAt: 1700000000000 + hour }); t.after(h.dispose)
   await h.trail.manualCapture(); await h.settle()
   assert.equal(h.state().analysisSessionId, id); assert.equal(h.createdSessions.length, 0)
   assert.deepEqual(h.resumedSessions, [id]); assert.equal(messages(h.conversations.get(id)).length, 4)
@@ -104,7 +104,7 @@ test('restart restores the associated conversation instead of creating another o
 test('restart after eight hours creates a new session without resuming or deleting the old one', async (t) => {
   const first = await createHost()
   await first.trail.manualCapture(); await first.settle(); const id = first.state().analysisSessionId; await first.dispose()
-  const h = await createHost({ history: JSON.parse(first.files.get(`${root}/state.json`)), conversations: first.conversations, startAt: 1700000000000 + 8 * hour }); t.after(h.dispose)
+  const h = await createHost({ history: first.snapshot(), conversations: first.conversations, startAt: 1700000000000 + 8 * hour }); t.after(h.dispose)
   await h.trail.manualCapture(); await h.settle()
   assert.notEqual(h.state().analysisSessionId, id); assert.equal(h.createdSessions.length, 1)
   assert.equal(h.resumedSessions.length, 0); assert.equal(h.conversations.has(id), true)
@@ -162,12 +162,15 @@ test('model failure preserves the submitted input and native failed attempt', as
   assert.deepEqual(session.events.filter((event) => ['user/message', 'assistant/attempt'].includes(event.type)).map((event) => event.type), ['user/message', 'assistant/attempt'])
 })
 
-test('failed native durability is not reported as successful event analysis', async (t) => {
+test('failed chat durability reports failure but does not undo or retry committed events', async (t) => {
   const h = await createHost(); t.after(h.dispose)
   h.ctx.sessions.flush = async () => { throw new Error('session checkpoint failed') }
   await h.trail.manualCapture(); await h.settle()
   assert.match(h.state().lastError, /session checkpoint failed/)
-  assert.equal(h.state().records.length, 0); assert.equal(h.requests.length, 1)
+  assert.equal(h.state().records.length, 1); assert.equal(h.requests.length, 1)
+  assert.equal(h.state().lastAnalysis.outcome, 'failed')
+  assert.ok(h.state().lastAnalysis.eventCommit)
+  assert.equal(h.state().unfinishedCount, 0)
 })
 
 test('clearing recorder data cancels the native turn without deleting or recreating its conversation', async (t) => {
@@ -241,7 +244,7 @@ test('native chunk and end frames without turn preserve reply, usage and finish'
   assert.equal(h.state().records.length, 1)
   assert.equal(h.state().lastAnalysis.finish.kind, 'stop')
   assert.equal(h.state().lastAnalysis.usage.outputTokens, 200)
-  assert.equal(h.state().lastAnalysis.chunks, 3)
+  assert.equal(h.state().lastAnalysis.chunks, 4)
 })
 
 test('recorded-format native frames deliver all chunks and trace their attempt identity', async () => {
@@ -305,12 +308,13 @@ test('native end count mismatches cannot masquerade as a complete response', asy
     (error) => error.code === 'STREAM_PROTOCOL' && /received 5/.test(error.message))
 })
 
-test('native analysis does not gain execution permissions through a PTC code entry point', async (t) => {
+test('native analysis does not override the host tool permissions or executor', async (t) => {
   const h = await createHost({ hold: true }); t.after(h.dispose)
   await h.trail.manualCapture(); await h.settle()
   const agent = h.ctx.agents.get(h.state().analysisSessionId)
-  assert.deepEqual(agent.toolRestriction, { allow: [] })
-  assert.match(agent.toolGuard({ name: 'run_code' }), /不执行工具/)
+  assert.equal(agent.toolRestriction, null)
+  assert.equal(agent.toolGuard, null)
+  assert.equal(agent.executor, undefined)
   h.release(); await h.settle()
   assert.equal(agent.toolGuard, null)
 })

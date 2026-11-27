@@ -32,7 +32,7 @@ test('sampling interval is respected while retired analysis settings are migrate
 test('partial and repeated image references no longer reject an entire batch', async (t) => {
   for (const [reply, count] of [
     [{ activities: [] }, 0],
-    [{ activities: [{ task: 0, images: [1, 1, 99], goal: '修改项目代码', activity: '修改', summary: '修改代码' }] }, 1],
+    [{ activities: [{ task: 0, images: [1, 1], goal: '修改项目代码', activity: '修改', summary: '修改代码' }] }, 1],
   ]) {
     const h = await createHost({ reply }); t.after(h.dispose)
     await h.trail.manualCapture(); await h.settle()

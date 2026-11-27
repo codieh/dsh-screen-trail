@@ -3,7 +3,8 @@ import { createHash } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import type { CaptureOptions, CaptureFrame } from './types.js'
+import type { ChildProcess } from 'node:child_process'
+import type { CaptureFrame, CaptureOptions } from './types.js'
 
 export const SURFACE_MARKER = '[dsh-screen-trail]'
 const cancelled = () => Object.assign(new Error('capture start cancelled'), { name: 'AbortError' })
@@ -36,24 +37,24 @@ export function decodeFrame(message: any): CaptureFrame {
 
 /** 原生流保持运行，只有选中的帧落盘；不再启动输入监听或逐帧外部转换命令。 */
 export class MacCapture {
-  declare root: string
-  declare log: CaptureOptions['log']
-  declare spawn: typeof spawn
-  declare maxDimension: number
-  declare sampleIntervalSec: number
-  declare onFrame: CaptureOptions['onFrame']
-  declare onPresence: CaptureOptions['onPresence']
-  declare onError: CaptureOptions['onError']
-  declare setTimer: typeof setTimeout
-  declare clearTimer: typeof clearTimeout
+  declare root: string;
+  declare log: CaptureOptions['log'];
+  declare spawn: typeof spawn;
+  declare maxDimension: number;
+  declare sampleIntervalSec: number;
+  declare onFrame: CaptureOptions['onFrame'];
+  declare onPresence: CaptureOptions['onPresence'];
+  declare onError: CaptureOptions['onError'];
+  declare setTimer: typeof setTimeout;
+  declare clearTimer: typeof clearTimeout;
   declare state: string;
   declare epoch: number;
-  declare wakeTimer: any;
+  declare wakeTimer: ReturnType<typeof setTimeout> | null;
   declare recovering: boolean;
-  declare jobs: Set<any>;
-  declare preparing: Promise<any> | null | undefined;
-  declare streamChild: any;
-  declare starting: Promise<any> | null | undefined;
+  declare jobs: Set<ChildProcess>;
+  declare preparing: Promise<string> | null;
+  declare streamChild: ChildProcess | null;
+  declare starting: Promise<void> | null;
 
   constructor({ root, onFrame, onPresence, onError, log, maxDimension = 1600, sampleIntervalSec = 5, spawnProcess = spawn, setTimer = setTimeout, clearTimer = clearTimeout }: CaptureOptions) {
     if (!Number.isSafeInteger(sampleIntervalSec) || sampleIntervalSec < 1) throw new Error('sampleIntervalSec must be a positive integer')
@@ -65,7 +66,7 @@ export class MacCapture {
     this.jobs = new Set()
   }
 
-  async binary() {
+  async binary(): Promise<string> {
     if (!this.preparing) this.preparing = (async () => {
       const source = fileURLToPath(new URL('../native/capture.swift', import.meta.url))
       const hash = createHash('sha256').update(await fs.readFile(source)).digest('hex').slice(0, 16)
@@ -93,17 +94,20 @@ export class MacCapture {
     return this.preparing
   }
 
-  async launch(single = false) {
+  launch(single: true): Promise<CaptureFrame>;
+  launch(single?: false): Promise<void>;
+  async launch(single = false): Promise<CaptureFrame | void> {
     const epoch = this.epoch
     const binary = await this.binary()
     if (epoch !== this.epoch) throw cancelled()
-    return new Promise<any>((resolve, reject) => {
+    return new Promise<CaptureFrame | void>((resolve, reject) => {
       let ready = false
       let settled = false
       let failed = false
       let buffer = ''
       let detail = ''
-      const child = this.spawn(binary, [`--dimension=${this.maxDimension}`, `--sample-interval-sec=${this.sampleIntervalSec}`, ...(single ? ['--once'] : [])], { stdio: ['ignore', 'pipe', 'pipe'] })
+      const child = this.spawn(binary, [`--dimension=${this.maxDimension}`, `--sample-interval-sec=${this.sampleIntervalSec}`,
+        ...(!single && this.recovering ? ['--no-permission-prompt'] : []), ...(single ? ['--once'] : [])], { stdio: ['ignore', 'pipe', 'pipe'] })
       if (!single) this.streamChild = child
       this.jobs.add(child)
       const timer = this.setTimer(() => fail(new Error(this.recovering && !single
@@ -147,7 +151,7 @@ export class MacCapture {
                 this.onPresence({ type: 'ready', at: Date.now() })
                 if (!settled) {
                   if (!this.recovering) this.clearTimer(timer)
-                  settled = true; resolve(undefined)
+                  settled = true; resolve()
                 }
               }
             } else if (message.type === 'frame') {
@@ -179,7 +183,7 @@ export class MacCapture {
                 this.recovering = false
                 this.cancelWake(); ready = false; this.state = 'waiting'
                 this.log('capture.waiting', message); this.onPresence(message)
-                if (!settled) { this.clearTimer(timer); settled = true; resolve(undefined) }
+                if (!settled) { this.clearTimer(timer); settled = true; resolve() }
               } else if (this.state === 'waiting' && this.wakeTimer === null) {
                 this.log('capture.wake', message)
                 // 每次亮屏只重建一次；主动停止会撤销定时器及旧进程的全部回调。
@@ -215,9 +219,10 @@ export class MacCapture {
     })
   }
 
-  async start() {
+  async start({ confirmFrame = false } = {}) {
     if (this.starting) return this.starting
     if (this.streamChild && ['ready', 'waiting'].includes(this.state)) return
+    if (confirmFrame) this.recovering = true
     this.state = 'starting'
     const epoch = this.epoch
     const task = this.launch().finally(() => { if (this.starting === task) this.starting = null })

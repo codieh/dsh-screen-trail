@@ -1,8 +1,9 @@
 {
   "name": "@local/dsh-screen-trail",
-  "version": "0.5.7",
+  "version": "0.7.1",
   "private": true,
   "type": "module",
+  "engines": { "node": ">=24" },
   "description": "Native low-frame-rate capture with batched visual analysis and activity-level summaries.",
   "scripts": {
     "build": "node scripts/build.mjs",
@@ -18,7 +19,9 @@
     "./icon": "./icon.svg"
   },
   "files": [
-    "dist",
+    "dist/*.js",
+    "dist/*.d.ts",
+    "dist/*.js.map",
     "native",
     "cordis.patch.yml",
     "locale/*.json",
@@ -26,11 +29,7 @@
     "icon.svg"
   ],
   "types": "./dist/index.d.ts",
-  "devDependencies": {
-    "typescript": "^7.0.2",
-    "@types/node": "^24.0.0",
-    "@types/react": "^18.3.0"
-  },
+  "devDependencies": { "typescript": "7.0.2", "@types/node": "^24.0.0", "@types/react": "^18.3.0" },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"

@@ -1,21 +1,22 @@
 import { ScreenTrail } from './trail.js'
-import type { PluginConfig } from './types.js'
 import type { HostContext } from './host.js'
-export type { PluginConfig, Observation, Activity, CaptureFrame, StreamChunk, ModelObservation,
-  WindowContext, Thumbnail, ActivityAnalysis, FinishReason, TokenUsage, CaptureOptions, RuntimeAdapters } from './types.js'
+import type { PluginConfig } from './types.js'
+import type { IncomingMessage, ServerResponse, RequestListener } from 'node:http'
+interface ControlRequest { action?: string; id?: string; intervalSec?: unknown; settings?: import('./types.js').ModelSettings; permission?: string }
+export type * from './types.js'
 export type { HostContext, NativeAgent } from './host.js'
 
-export const inject = ['llm', 'webServer', 'attachments', 'agentDefaultModel', 'timer', 'agents', 'sessions', 'sessionPersistence', 'sessionQuery', 'sessionTitle', 'workingDirectory', 'workspaceRegistry', 'agentPresets', 'tokenMeter']
+export const inject = ['llm', 'webServer', 'attachments', 'agentDefaultModel', 'timer', 'agents', 'sessions', 'sessionPersistence', 'sessionQuery', 'sessionTitle', 'workingDirectory', 'workspaceRegistry', 'agentPresets', 'tokenMeter', 'tools']
 const prefix = '/screen-trail/api'
 
-function send(response, status, value) {
+function send(response: ServerResponse, status: number, value: unknown): void {
   const body = JSON.stringify(value)
   response.writeHead(status, { 'cache-control': 'no-store', 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(body) })
   response.end(body)
 }
 
 /** 插件接口独立于宿主登录门禁，同时检查连接、Host 与修改请求的来源。 */
-function admit(request, response, mutation = false) {
+function admit(request: IncomingMessage, response: ServerResponse, mutation = false): boolean {
   const host = String(request.headers.host || '')
   const name = host.startsWith('[') ? host.slice(1, host.indexOf(']')) : host.split(':')[0]
   const peer = request.socket?.remoteAddress
@@ -29,8 +30,8 @@ function admit(request, response, mutation = false) {
   return false
 }
 
-function readJson(request) {
-  return new Promise((resolve, reject) => {
+function readJson(request: IncomingMessage): Promise<ControlRequest> {
+  return new Promise<ControlRequest>((resolve, reject) => {
     const chunks = []
     let bytes = 0
     request.on('data', (chunk) => {
@@ -54,8 +55,8 @@ export function apply(ctx: HostContext, config: PluginConfig = {}) {
   registerRoutes(ctx, trail)
 }
 
-export function registerRoutes(ctx, trail) {
-  const register = (path, handler) => ctx.effect(() => {
+export function registerRoutes(ctx: HostContext, trail: ScreenTrail) {
+  const register = (path: string, handler: RequestListener) => ctx.effect(() => {
     const dispose = ctx.webServer.register({ kind: 'exact', path: `${prefix}/${path}`, handler })
     return () => { if (typeof dispose === 'function') dispose() }
   })
@@ -64,10 +65,24 @@ export function registerRoutes(ctx, trail) {
     if (!['GET', 'HEAD'].includes(request.method)) { send(response, 405, { ok: false, error: 'method not allowed' }); return }
     send(response, 200, trail.state())
   })
+  register('events', async (request, response) => {
+    if (!admit(request, response)) return
+    if (!['GET', 'HEAD'].includes(request.method)) { send(response, 405, { ok: false, error: 'method not allowed' }); return }
+    try {
+      await trail.assertReady()
+      const params = new URL(request.url, 'http://localhost').searchParams
+      const result = trail.store.listDay({ date: params.get('date'), limit: params.has('limit') ? Number(params.get('limit')) : 30,
+        cursor: params.get('cursor') || undefined })
+      send(response, 200, result)
+    } catch (error) {
+      trail.log('events.list_failed', { message: error.message })
+      send(response, /date|limit|cursor/.test(error.message) ? 400 : 500, { ok: false, error: error.message })
+    }
+  })
   register('control', async (request, response) => {
     if (!admit(request, response, true)) return
     if (request.method !== 'POST') { send(response, 405, { ok: false, error: 'method not allowed' }); return }
-    let body
+    let body: ControlRequest
     try { body = await readJson(request) } catch (error) { send(response, 400, { ok: false, error: error.message }); return }
     try {
       await trail.assertReady()
@@ -94,11 +109,11 @@ export function registerRoutes(ctx, trail) {
         case 'setInterval': {
           const value = Number(body.intervalSec)
           if (!Number.isInteger(value) || value < 15 || value > 300) throw new Error('intervalSec must be an integer between 15 and 300')
-          trail.settings.analysisWindowSec = value
-          trail.pumpAnalysis()
+          await trail.setAnalysisWindow(value)
           break
         }
         case 'setSampleInterval': await trail.setSampleInterval(Number(body.intervalSec)); break
+        case 'setModelSettings': await trail.setModelSettings(body.settings); break
         case 'openPermission': await trail.openPermission(body.permission || 'screen'); break
         default: send(response, 400, { ok: false, error: 'unknown action' }); return
       }
@@ -106,6 +121,18 @@ export function registerRoutes(ctx, trail) {
     } catch (error) {
       trail.fail(`control.${body.action}`, error)
       send(response, 500, { ok: false, error: trail.status.lastError })
+    }
+  })
+  for (const endpoint of ['models', 'model-info']) register(endpoint, async (request, response) => {
+    if (!admit(request, response)) return
+    if (!['GET', 'HEAD'].includes(request.method)) { send(response, 405, { ok: false, error: 'method not allowed' }); return }
+    try {
+      await trail.assertReady()
+      const url = new URL(request.url, 'http://localhost')
+      send(response, 200, endpoint === 'models' ? await trail.modelCatalog() : await trail.modelDetails(url.searchParams.get('provider') || '', url.searchParams.get('model') || ''))
+    } catch (error) {
+      trail.log('model_settings.read_failed', { endpoint, message: error.message })
+      send(response, 500, { ok: false, error: error.message })
     }
   })
   register('image', async (request, response) => {
