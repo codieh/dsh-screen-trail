@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdtemp, mkdir, readFile, rm, writeFile, symlink, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -9,6 +9,22 @@ import test from 'node:test'
 
 const exec = promisify(execFile)
 const root = fileURLToPath(new URL('../', import.meta.url))
+
+test('fresh source builds through the same prepack lifecycle used by Git installation', async (t) => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'screen-trail-prepack-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const source = path.join(directory, 'source'); const artifacts = path.join(directory, 'artifacts')
+  await cp(root, source, { recursive: true, filter: (entry) => !['.git', 'node_modules', 'dist'].includes(path.relative(root, entry).split(path.sep)[0]) })
+  await mkdir(artifacts)
+  // 复用已安装的构建工具，不在单元测试中联网安装依赖，也不预先复制 dist。
+  await symlink(path.join(root, 'node_modules'), path.join(source, 'node_modules'), 'dir')
+  const manifest = JSON.parse(await readFile(path.join(source, 'package.json'), 'utf8'))
+  assert.equal(manifest.scripts.prepack, 'npm run build')
+  await exec('npm', ['pack', '--pack-destination', artifacts, '--cache', path.join(directory, 'npm-cache')], { cwd: source })
+  assert.ok((await readFile(path.join(source, 'dist/index.js'), 'utf8')).includes('registerRoutes'))
+  assert.ok((await readFile(path.join(source, 'dist/client.js'), 'utf8')).includes('__ModuleLoader__'))
+  assert.equal((await readdir(artifacts)).filter((file) => file.endsWith('.tgz')).length, 1)
+})
 
 test('npm package contains valid runtime files but no development or local data', async (t) => {
   const directory = await mkdtemp(path.join(tmpdir(), 'screen-trail-package-'))

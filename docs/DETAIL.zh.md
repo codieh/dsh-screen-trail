@@ -112,6 +112,12 @@ autoStart: false
 
 开发验证：`npm test`。测试使用模拟屏幕和模型回复，覆盖采样、选图、事件工具、SQLite 事务、日期分页、资源清理及宿主会话接口；不调用真实云端模型或实际录屏。
 
+## 远程安装
+
+桌面端插件管理器的“添加插件”可直接输入 `https://github.com/codieh/dsh-screen-trail`，无需先 clone。安装器下载仓库，项目的 `prepack` 脚本调用 `npm run build` 生成 `dist/`，再打包安装。若 pnpm 拦截 Git 依赖构建，宿主会显示“需要允许安装脚本”；确认本项目后选择“允许这些脚本并重试”。脚本授权只应授予信任的具体包。
+
+`dsh web` 使用 `dsh plugin --profile web add github:codieh/dsh-screen-trail`。终端遇到 `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` 时，按提示在相应 profile 的 `pnpm-workspace.yaml` 中合并具体包的 `allowBuilds` 配置并重试，不关闭全局审批。安装说明与本地开发、预构建 `.tgz` 安装方式见仓库 README。远程安装只准备插件文件，不会自动开始录屏。
+
 ## TypeScript 开发
 
 沿用 `codex/typescript-refactor` 分支的 `src/`、`dist/` 和宿主接口分层，补齐 0.7.1 的 SQLite、事件工具、日期 Tab 与自动恢复。`npm ci` 安装构建依赖，`npm run build` 清理并生成 JavaScript、类型声明及源码映射；公开导出名称不变，宿主继续执行 JavaScript。Swift 源码仍位于 `native/`，编译后的采集模块从该目录读取辅助程序源码。
